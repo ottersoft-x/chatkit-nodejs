@@ -1,4 +1,4 @@
-import { UnsupportedOperationError, ValidationError } from "./errors";
+import { NotFoundError, UnsupportedOperationError, ValidationError } from "./errors";
 import { decodeJsonBytes, encodeJsonBytes } from "./serialization";
 import type { AttachmentStore, Store } from "./store";
 import { ThreadMetadataSchema, type Page, type ThreadItem, type ThreadMetadata } from "./types/core";
@@ -535,9 +535,11 @@ export abstract class ChatKitServer<TContext = unknown> {
     try {
       for await (const rawEvent of stream()) {
         const event = ThreadStreamEventSchema.parse(rawEvent);
+        let suppressClientEvent = false;
 
         if (event.type === "thread.item.added") {
           pendingItems.set(event.item.id, structuredClone(event.item));
+          suppressClientEvent = this.isHiddenItem(event.item);
         } else if (event.type === "thread.item.done") {
           const pendingItem = pendingItems.get(event.item.id);
           const itemToSave = this.mergePendingUpdatesIntoDoneItem(
@@ -548,21 +550,38 @@ export abstract class ChatKitServer<TContext = unknown> {
           await this.store.addThreadItem(thread.id, itemToSave, context);
           pendingItems.delete(event.item.id);
           updatedPendingItemIds.delete(event.item.id);
+          suppressClientEvent = this.isHiddenItem(itemToSave);
         } else if (event.type === "thread.item.removed") {
-          await this.store.deleteThreadItem(thread.id, event.item_id, context);
+          const pendingItem = pendingItems.get(event.item_id);
+          suppressClientEvent =
+            (pendingItem != null && this.isHiddenItem(pendingItem)) ||
+            (pendingItem == null && (await this.isStoredHiddenItem(thread.id, event.item_id, context)));
+
+          if (pendingItem == null || !this.isHiddenItem(pendingItem)) {
+            await this.store.deleteThreadItem(thread.id, event.item_id, context);
+          }
+
           pendingItems.delete(event.item_id);
           updatedPendingItemIds.delete(event.item_id);
         } else if (event.type === "thread.item.replaced") {
           await this.store.saveItem(thread.id, event.item, context);
           pendingItems.delete(event.item.id);
           updatedPendingItemIds.delete(event.item.id);
+          suppressClientEvent = this.isHiddenItem(event.item);
         } else if (event.type === "thread.item.updated") {
+          suppressClientEvent = await this.isKnownHiddenItem(
+            thread.id,
+            event.item_id,
+            pendingItems,
+            context,
+          );
+
           if (this.updatePendingItems(pendingItems, event.item_id, event.update)) {
             updatedPendingItemIds.add(event.item_id);
           }
         }
 
-        if (!(event.type === "thread.item.done" && this.isHiddenItem(event.item))) {
+        if (!suppressClientEvent) {
           yield event;
         }
 
@@ -731,6 +750,36 @@ export abstract class ChatKitServer<TContext = unknown> {
 
   protected isHiddenItem(item: ThreadItem): boolean {
     return item.type === "hidden_context_item" || item.type === "sdk_hidden_context";
+  }
+
+  private async isKnownHiddenItem(
+    threadId: string,
+    itemId: string,
+    pendingItems: Map<string, ThreadItem>,
+    context: TContext,
+  ): Promise<boolean> {
+    const pendingItem = pendingItems.get(itemId);
+    if (pendingItem) {
+      return this.isHiddenItem(pendingItem);
+    }
+
+    return this.isStoredHiddenItem(threadId, itemId, context);
+  }
+
+  private async isStoredHiddenItem(
+    threadId: string,
+    itemId: string,
+    context: TContext,
+  ): Promise<boolean> {
+    try {
+      return this.isHiddenItem(await this.store.loadItem(threadId, itemId, context));
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return false;
+      }
+
+      throw error;
+    }
   }
 
   protected async processSyncCustomAction(

@@ -26,6 +26,7 @@ type AssistantMessageItem = Extract<ThreadItem, { type: "assistant_message" }>;
 type StructuredInputItem = Extract<ThreadItem, { type: "structured_input" }>;
 type WidgetItem = Extract<ThreadItem, { type: "widget" }>;
 type WorkflowItem = Extract<ThreadItem, { type: "workflow" }>;
+type HiddenContextItem = Extract<ThreadItem, { type: "hidden_context_item" }>;
 type Responder = (
   thread: ThreadMetadata,
   inputUserMessage: UserMessageItem | null,
@@ -130,6 +131,16 @@ function makeWorkflowItem(threadId = "thr_test"): WorkflowItem {
       tasks: [],
       expanded: false,
     },
+  };
+}
+
+function makeHiddenContextItem(id = "ctx_hidden", threadId = "thr_test"): HiddenContextItem {
+  return {
+    id,
+    type: "hidden_context_item",
+    thread_id: threadId,
+    created_at: "2026-05-27T00:00:02.000Z",
+    content: { internal: true },
   };
 }
 
@@ -1419,6 +1430,159 @@ describe("ChatKitServer", () => {
     expect(events.filter((event) => event.type === "error")).toEqual([
       { type: "error", code: "stream.error", allow_retry: true },
     ]);
+  });
+
+  test("suppresses hidden context added and done events while persisting the done item", async () => {
+    const server = new TestServer(async function* (thread) {
+      const hidden = makeHiddenContextItem("ctx_added_done", thread.id);
+      yield { type: "thread.item.added", item: hidden };
+      yield {
+        type: "thread.item.updated",
+        item_id: hidden.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "hidden delta",
+        },
+      };
+      yield { type: "thread.item.done", item: hidden };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Use hidden context" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(
+      events.some(
+        (event) =>
+          (("item" in event && event.item.id === "ctx_added_done") ||
+            ("item_id" in event && event.item_id === "ctx_added_done")),
+      ),
+    ).toBe(false);
+    await expect(server.store.loadItem(thread.id, "ctx_added_done", defaultContext)).resolves.toMatchObject({
+      type: "hidden_context_item",
+      content: { internal: true },
+    });
+  });
+
+  test("suppresses hidden context replaced events while persisting the replacement", async () => {
+    const server = new TestServer(async function* (thread) {
+      yield {
+        type: "thread.item.replaced",
+        item: {
+          ...makeHiddenContextItem("ctx_replace", thread.id),
+          content: { replacement: true },
+        },
+      };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+    await server.store.addThreadItem(thread.id, makeHiddenContextItem("ctx_replace", thread.id), defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Replace hidden context" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(
+      events.some((event) => "item" in event && event.item.id === "ctx_replace"),
+    ).toBe(false);
+    await expect(server.store.loadItem(thread.id, "ctx_replace", defaultContext)).resolves.toMatchObject({
+      type: "hidden_context_item",
+      content: { replacement: true },
+    });
+  });
+
+  test("suppresses hidden context updated and removed events for pending and stored items", async () => {
+    const server = new TestServer(async function* (thread) {
+      const pendingHidden = makeHiddenContextItem("ctx_pending_remove", thread.id);
+      yield { type: "thread.item.added", item: pendingHidden };
+      yield {
+        type: "thread.item.updated",
+        item_id: pendingHidden.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "hidden pending delta",
+        },
+      };
+      yield { type: "thread.item.removed", item_id: pendingHidden.id };
+      yield {
+        type: "thread.item.updated",
+        item_id: "ctx_stored_remove",
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "hidden stored delta",
+        },
+      };
+      yield { type: "thread.item.removed", item_id: "ctx_stored_remove" };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+    await server.store.addThreadItem(
+      thread.id,
+      makeHiddenContextItem("ctx_stored_remove", thread.id),
+      defaultContext,
+    );
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Remove hidden context" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(
+      events.some(
+        (event) =>
+          (("item" in event && event.item.id.startsWith("ctx_")) ||
+            ("item_id" in event && event.item_id.startsWith("ctx_"))),
+      ),
+    ).toBe(false);
+    await expect(server.store.loadItem(thread.id, "ctx_pending_remove", defaultContext)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    await expect(server.store.loadItem(thread.id, "ctx_stored_remove", defaultContext)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 
   test("replaces an item in the store from a thread item replaced event", async () => {
