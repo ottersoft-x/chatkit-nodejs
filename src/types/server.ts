@@ -16,7 +16,6 @@ import {
 export const DEFAULT_PAGE_SIZE = 20;
 
 const JsonRecordSchema = z.record(z.string(), z.unknown());
-const NullableJsonRecordSchema = JsonRecordSchema.nullable().optional();
 
 export const FeedbackKindSchema = z.enum(["positive", "negative"]);
 export type FeedbackKind = z.infer<typeof FeedbackKindSchema>;
@@ -51,29 +50,22 @@ export type StructuredInputAnswerSubmission = z.infer<
 
 export const StructuredInputSubmissionSchema = z.object({
   answers: z.record(z.string(), StructuredInputAnswerSubmissionSchema).default({}),
-  skipped: z.boolean().default(false),
+  status: z.enum(["answered", "skipped"]).default("answered"),
 });
 export type StructuredInputSubmission = z.infer<typeof StructuredInputSubmissionSchema>;
 
 export const ThreadCustomActionParamsSchema = z.object({
   thread_id: z.string(),
+  item_id: z.string().nullable().optional(),
   action: ActionConfigSchema,
-  sender: z
-    .object({
-      item_id: z.string().optional(),
-      widget: JsonRecordSchema.optional(),
-    })
-    .catchall(z.unknown()),
 });
 export type ThreadCustomActionParams = z.infer<typeof ThreadCustomActionParamsSchema>;
 
 export const AudioInputSchema = z.object({
-  data: z.string(),
+  data: z.instanceof(Uint8Array),
   mime_type: z.string(),
 });
-export type AudioInput = z.infer<typeof AudioInputSchema> & {
-  readonly mediaType: string;
-};
+export type AudioInput = z.infer<typeof AudioInputSchema>;
 
 export const TranscriptionResultSchema = z.object({
   text: z.string(),
@@ -98,13 +90,12 @@ const AddUserMessageParamsSchema = ThreadIdParamsSchema.extend({
 });
 
 const AddClientToolOutputParamsSchema = ThreadIdParamsSchema.extend({
-  call_id: z.string(),
-  output: z.unknown(),
+  result: z.unknown(),
 });
 
 const AddStructuredInputParamsSchema = ThreadIdParamsSchema.extend({
   item_id: z.string(),
-  submission: StructuredInputSubmissionSchema,
+  input: StructuredInputSubmissionSchema,
 });
 
 const RetryAfterItemParamsSchema = ThreadIdParamsSchema.extend({
@@ -115,15 +106,13 @@ const ListItemsParamsSchema = ThreadIdParamsSchema.merge(PageParamsSchema);
 
 const ItemsFeedbackParamsSchema = ThreadIdParamsSchema.extend({
   item_ids: z.array(z.string()),
-  feedback: FeedbackKindSchema,
+  kind: FeedbackKindSchema,
 });
 
 const AttachmentsCreateParamsSchema = z.object({
-  thread_id: z.string().nullable().optional(),
-  filename: z.string().optional(),
-  name: z.string().optional(),
+  name: z.string(),
+  size: z.number().int(),
   mime_type: z.string(),
-  metadata: NullableJsonRecordSchema,
 });
 
 const AttachmentsDeleteParamsSchema = z.object({
@@ -132,14 +121,12 @@ const AttachmentsDeleteParamsSchema = z.object({
 });
 
 const ThreadsUpdateParamsSchema = ThreadIdParamsSchema.extend({
-  title: z.string().nullable().optional(),
-  status: ThreadMetadataSchema.shape.status.optional(),
-  allowed_image_domains: z.array(z.string()).nullable().optional(),
-  metadata: JsonRecordSchema.optional(),
+  title: z.string(),
 });
 
 const InputTranscribeParamsSchema = z.object({
-  audio: AudioInputSchema,
+  audio_base64: z.string(),
+  mime_type: z.string(),
 });
 
 function requestSchema<TType extends string, TParams extends z.ZodType>(
@@ -245,153 +232,153 @@ export const ThreadSchema = ThreadMetadataSchema.extend({
 });
 export type Thread = z.infer<typeof ThreadSchema>;
 
-const ThreadCreatedEventSchema = z.object({
+export const ThreadCreatedEventSchema = z.object({
   type: z.literal("thread.created"),
   thread: ThreadSchema,
 });
 
-const ThreadUpdatedEventSchema = z.object({
+export const ThreadUpdatedEventSchema = z.object({
   type: z.literal("thread.updated"),
-  thread: ThreadMetadataSchema,
+  thread: ThreadSchema,
 });
 
-const ThreadItemAddedEventSchema = z.object({
+export const ThreadItemAddedEventSchema = z.object({
   type: z.literal("thread.item.added"),
   item: ThreadItemSchema,
 });
 
-const ThreadItemDoneEventSchema = z.object({
+export const ThreadItemDoneEventSchema = z.object({
   type: z.literal("thread.item.done"),
   item: ThreadItemSchema,
 });
 
-const ThreadItemRemovedEventSchema = z.object({
+export const ThreadItemRemovedEventSchema = z.object({
   type: z.literal("thread.item.removed"),
   item_id: z.string(),
 });
 
-const ThreadItemReplacedEventSchema = z.object({
+export const ThreadItemReplacedEventSchema = z.object({
   type: z.literal("thread.item.replaced"),
   item: ThreadItemSchema,
 });
 
-const AssistantContentPartAddedUpdateSchema = z.object({
+export const AssistantMessageContentPartAddedSchema = z.object({
   type: z.literal("assistant_message.content_part.added"),
   content_index: z.number().int().nonnegative(),
   content: AssistantMessageContentSchema,
 });
 
-const AssistantTextDeltaUpdateSchema = z.object({
+export const AssistantMessageContentPartTextDeltaSchema = z.object({
   type: z.literal("assistant_message.content_part.text_delta"),
   content_index: z.number().int().nonnegative(),
   delta: z.string(),
 });
 
-const AssistantAnnotationAddedUpdateSchema = z.object({
+export const AssistantMessageContentPartAnnotationAddedSchema = z.object({
   type: z.literal("assistant_message.content_part.annotation_added"),
   content_index: z.number().int().nonnegative(),
   annotation_index: z.number().int().nonnegative().optional(),
   annotation: AnnotationSchema,
 });
 
-const AssistantContentPartDoneUpdateSchema = z.object({
+export const AssistantMessageContentPartDoneSchema = z.object({
   type: z.literal("assistant_message.content_part.done"),
   content_index: z.number().int().nonnegative(),
   content: AssistantMessageContentSchema.optional(),
 });
 
-const WorkflowTaskAddedUpdateSchema = z.object({
+export const WorkflowTaskAddedSchema = z.object({
   type: z.literal("workflow.task.added"),
   task_index: z.number().int().nonnegative(),
   task: TaskSchema,
 });
 
-const WorkflowTaskUpdatedUpdateSchema = z.object({
+export const WorkflowTaskUpdatedSchema = z.object({
   type: z.literal("workflow.task.updated"),
   task_index: z.number().int().nonnegative(),
   task: TaskSchema,
 });
 
-const GeneratedImageUpdatedUpdateSchema = z.object({
+export const GeneratedImageUpdatedSchema = z.object({
   type: z.literal("generated_image.updated"),
   image: GeneratedImageSchema.nullable(),
+  progress: z.number().nullable().optional(),
 });
 
-const WidgetRootUpdatedUpdateSchema = z
+export const WidgetRootUpdatedSchema = z
   .object({
     type: z.literal("widget.root.updated"),
     widget: JsonRecordSchema.optional(),
   })
   .catchall(z.unknown());
 
-const WidgetComponentUpdatedUpdateSchema = z
+export const WidgetComponentUpdatedSchema = z
   .object({
     type: z.literal("widget.component.updated"),
     component_id: z.string().optional(),
-    update: JsonRecordSchema.optional(),
+    component: JsonRecordSchema.optional(),
   })
   .catchall(z.unknown());
 
-const WidgetStreamingTextValueDeltaUpdateSchema = z
+export const WidgetStreamingTextValueDeltaSchema = z
   .object({
     type: z.literal("widget.streaming_text.value_delta"),
-    delta: z.string().optional(),
+    component_id: z.string(),
+    delta: z.string(),
+    done: z.boolean().default(false),
   })
   .catchall(z.unknown());
 
 export const ThreadItemUpdateSchema = z.discriminatedUnion("type", [
-  AssistantContentPartAddedUpdateSchema,
-  AssistantTextDeltaUpdateSchema,
-  AssistantAnnotationAddedUpdateSchema,
-  AssistantContentPartDoneUpdateSchema,
-  WorkflowTaskAddedUpdateSchema,
-  WorkflowTaskUpdatedUpdateSchema,
-  GeneratedImageUpdatedUpdateSchema,
-  WidgetRootUpdatedUpdateSchema,
-  WidgetComponentUpdatedUpdateSchema,
-  WidgetStreamingTextValueDeltaUpdateSchema,
+  AssistantMessageContentPartAddedSchema,
+  AssistantMessageContentPartTextDeltaSchema,
+  AssistantMessageContentPartAnnotationAddedSchema,
+  AssistantMessageContentPartDoneSchema,
+  WorkflowTaskAddedSchema,
+  WorkflowTaskUpdatedSchema,
+  GeneratedImageUpdatedSchema,
+  WidgetRootUpdatedSchema,
+  WidgetComponentUpdatedSchema,
+  WidgetStreamingTextValueDeltaSchema,
 ]);
 export type ThreadItemUpdate = z.infer<typeof ThreadItemUpdateSchema>;
 
-const ThreadItemUpdatedEventSchema = z.object({
+export const ThreadItemUpdatedEventSchema = z.object({
   type: z.literal("thread.item.updated"),
   item_id: z.string(),
   update: ThreadItemUpdateSchema,
 });
 
-const StreamOptionsEventSchema = z.object({
+export const StreamOptionsEventSchema = z.object({
   type: z.literal("stream_options"),
-  options: StreamOptionsSchema,
+  stream_options: StreamOptionsSchema,
 });
 
-const ProgressUpdateEventSchema = z
-  .object({
-    type: z.literal("progress_update"),
-    message: z.string().optional(),
-  })
-  .catchall(z.unknown());
+export const ProgressUpdateEventSchema = z.object({
+  type: z.literal("progress_update"),
+  icon: z.string().nullable().optional(),
+  text: z.string(),
+});
 
-const ClientEffectEventSchema = z
-  .object({
-    type: z.literal("client_effect"),
-    effect: JsonRecordSchema.optional(),
-  })
-  .catchall(z.unknown());
+export const ClientEffectEventSchema = z.object({
+  type: z.literal("client_effect"),
+  name: z.string(),
+  data: JsonRecordSchema.default({}),
+});
 
-const ErrorEventSchema = z
-  .object({
-    type: z.literal("error"),
-    message: z.string(),
-    retryable: z.boolean().optional(),
-  })
-  .catchall(z.unknown());
+export const ErrorEventSchema = z.object({
+  type: z.literal("error"),
+  code: z.enum(["stream_error", "custom"]).default("custom"),
+  message: z.string().nullable().optional(),
+  allow_retry: z.boolean().default(false),
+});
 
-const NoticeEventSchema = z
-  .object({
-    type: z.literal("notice"),
-    message: z.string(),
-  })
-  .catchall(z.unknown());
+export const NoticeEventSchema = z.object({
+  type: z.literal("notice"),
+  level: z.enum(["info", "warning", "danger"]),
+  message: z.string(),
+  title: z.string().nullable().optional(),
+});
 
 export const ThreadStreamEventSchema = z.discriminatedUnion("type", [
   ThreadCreatedEventSchema,
@@ -410,6 +397,6 @@ export const ThreadStreamEventSchema = z.discriminatedUnion("type", [
 export type ThreadStreamEvent = z.infer<typeof ThreadStreamEventSchema>;
 
 export const SyncCustomActionResponseSchema = z.object({
-  events: z.array(ThreadStreamEventSchema).default([]),
+  updated_item: ThreadItemSchema.nullable().optional(),
 });
 export type SyncCustomActionResponse = z.infer<typeof SyncCustomActionResponseSchema>;
