@@ -646,6 +646,58 @@ describe("ChatKitServer", () => {
     });
   });
 
+  test("persists the submitted user message before streaming a created thread", async () => {
+    const server = new TestServer(async function* () {
+      yield { type: "progress_update", text: "responder should not need to run" };
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Close early" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    let threadId: string | null = null;
+    const decoder = new TextDecoder();
+    for await (const chunk of result.jsonEvents) {
+      for (const frame of decoder.decode(chunk).split("\n\n")) {
+        if (!frame) {
+          continue;
+        }
+
+        const json = frame.startsWith("data: ") ? frame.slice("data: ".length) : frame;
+        const event = JSON.parse(json) as ThreadStreamEvent;
+        if (event.type === "thread.created") {
+          threadId = event.thread.id;
+          break;
+        }
+      }
+
+      if (threadId) {
+        break;
+      }
+    }
+
+    if (!threadId) {
+      throw new Error("Expected thread to be created");
+    }
+    const items = await server.store.loadThreadItems(threadId, null, 10, "asc", defaultContext);
+    expect(items.data).toHaveLength(1);
+    expect(items.data[0]).toMatchObject({
+      type: "user_message",
+      content: [{ type: "input_text", text: "Close early" }],
+    });
+  });
+
   test("adds a user message to an existing thread and sends it to the responder", async () => {
     const captured: Array<UserMessageItem | null> = [];
     const server = new TestServer(async function* (_thread, inputUserMessage) {
@@ -1581,6 +1633,39 @@ describe("ChatKitServer", () => {
       NotFoundError,
     );
     await expect(server.store.loadItem(thread.id, "ctx_stored_remove", defaultContext)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  test("streams visible pending item removal without persisting the item", async () => {
+    const server = new TestServer(async function* (thread) {
+      const pending = { ...makeAssistantMessage("Pending removal"), id: "msg_pending_remove", thread_id: thread.id };
+      yield { type: "thread.item.added", item: pending };
+      yield { type: "thread.item.removed", item_id: pending.id };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Remove pending" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toContainEqual({ type: "thread.item.removed", item_id: "msg_pending_remove" });
+    await expect(server.store.loadItem(thread.id, "msg_pending_remove", defaultContext)).rejects.toBeInstanceOf(
       NotFoundError,
     );
   });

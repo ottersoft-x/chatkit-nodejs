@@ -264,10 +264,12 @@ export abstract class ChatKitServer<TContext = unknown> {
           items: { data: [], has_more: false, after: null },
         };
         await this.store.saveThread(ThreadMetadataSchema.parse(thread), context);
-        yield { type: "thread.created", thread: this.toThreadResponse(thread) };
-
         const userMessage = await this.buildUserMessageItem(request.params.input, thread, context);
-        yield* this.processNewThreadItemRespond(thread, userMessage, context);
+        await this.persistUserMessageItem(thread, userMessage, context);
+
+        yield { type: "thread.created", thread: this.toThreadResponse(thread) };
+        yield { type: "thread.item.done", item: userMessage };
+        yield* this.processEvents(thread, context, () => this.respond(thread, userMessage, context));
         return;
       }
 
@@ -310,13 +312,21 @@ export abstract class ChatKitServer<TContext = unknown> {
     item: UserMessageItem,
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
+    await this.persistUserMessageItem(thread, item, context);
+    yield { type: "thread.item.done", item };
+    yield* this.processEvents(thread, context, () => this.respond(thread, item, context));
+  }
+
+  protected async persistUserMessageItem(
+    thread: ThreadMetadata,
+    item: UserMessageItem,
+    context: TContext,
+  ): Promise<void> {
     for (const attachment of item.attachments) {
       await this.store.saveAttachment(attachment, context);
     }
 
     await this.store.addThreadItem(thread.id, item, context);
-    yield { type: "thread.item.done", item };
-    yield* this.processEvents(thread, context, () => this.respond(thread, item, context));
   }
 
   protected async *processStreamingContinuation(
@@ -557,7 +567,7 @@ export abstract class ChatKitServer<TContext = unknown> {
             (pendingItem != null && this.isHiddenItem(pendingItem)) ||
             (pendingItem == null && (await this.isStoredHiddenItem(thread.id, event.item_id, context)));
 
-          if (pendingItem == null || !this.isHiddenItem(pendingItem)) {
+          if (pendingItem == null) {
             await this.store.deleteThreadItem(thread.id, event.item_id, context);
           }
 
