@@ -1,0 +1,45 @@
+import { describe, expect, test } from "bun:test";
+
+import { NotFoundError, UnsupportedOperationError } from "../src/errors";
+import {
+  decodeJsonBytes,
+  encodeJsonBytes,
+  omitUndefinedDeep,
+  parseDate,
+  serializeDate,
+} from "../src/serialization";
+
+describe("serialization helpers", () => {
+  test("encodes and decodes JSON bytes", () => {
+    const bytes = encodeJsonBytes({ type: "example", value: 1 });
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(decodeJsonBytes(bytes)).toEqual({ type: "example", value: 1 });
+  });
+
+  test("omits undefined recursively but preserves null", () => {
+    expect(
+      omitUndefinedDeep({
+        keepNull: null,
+        dropUndefined: undefined,
+        nested: { value: "x", drop: undefined },
+        list: [{ a: 1, b: undefined }],
+      }),
+    ).toEqual({
+      keepNull: null,
+      nested: { value: "x" },
+      list: [{ a: 1 }],
+    });
+  });
+
+  test("serializes dates as ISO strings", () => {
+    const date = parseDate("2026-05-26T00:00:00.000Z");
+    expect(serializeDate(date)).toBe("2026-05-26T00:00:00.000Z");
+  });
+
+  test("exposes shared error classes", () => {
+    expect(new NotFoundError("Thread not found").name).toBe("NotFoundError");
+    expect(new UnsupportedOperationError("transcribe() is not implemented").name).toBe(
+      "UnsupportedOperationError",
+    );
+  });
+});
