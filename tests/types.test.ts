@@ -47,7 +47,74 @@ describe("core schemas", () => {
     ).toBe("image");
   });
 
-  test("parses known thread items and preserves unknown widget fields", () => {
+  test("allows attachment metadata to be null without applying defaults", () => {
+    const withNullMetadata = AttachmentSchema.parse({
+      id: "file_1",
+      type: "file",
+      mime_type: "text/plain",
+      name: "notes.txt",
+      metadata: null,
+    });
+    expect(withNullMetadata.metadata).toBeNull();
+
+    const omittedMetadata = AttachmentSchema.parse({
+      id: "file_2",
+      type: "file",
+      mime_type: "text/plain",
+      name: "notes.txt",
+    });
+    expect("metadata" in omittedMetadata).toBe(false);
+  });
+
+  test("allows attachment upload descriptors to be null", () => {
+    const attachment = AttachmentSchema.parse({
+      id: "file_1",
+      type: "file",
+      mime_type: "text/plain",
+      name: "notes.txt",
+      upload_descriptor: null,
+    });
+    expect(attachment.upload_descriptor).toBeNull();
+  });
+
+  test("preserves attachment thread ids when present", () => {
+    const attachment = AttachmentSchema.parse({
+      id: "file_1",
+      type: "file",
+      mime_type: "text/plain",
+      name: "notes.txt",
+      thread_id: "thr_1",
+    });
+    expect(attachment.thread_id).toBe("thr_1");
+  });
+
+  test("requires image attachment preview urls", () => {
+    expect(() =>
+      AttachmentSchema.parse({
+        id: "image_1",
+        type: "image",
+        mime_type: "image/png",
+        name: "image.png",
+      }),
+    ).toThrow();
+  });
+
+  test("restricts upload descriptor methods to POST and PUT", () => {
+    expect(() =>
+      AttachmentSchema.parse({
+        id: "file_1",
+        type: "file",
+        mime_type: "text/plain",
+        name: "notes.txt",
+        upload_descriptor: {
+          url: "https://example.com/upload",
+          method: "DELETE",
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("parses known widget thread items", () => {
     const item = ThreadItemSchema.parse({
       id: "widget_1",
       type: "widget",
@@ -55,7 +122,9 @@ describe("core schemas", () => {
       created_at: "2026-05-26T00:00:00.000Z",
       widget: { type: "Card", children: [] },
     });
-    expect(item.type).toBe("widget");
+    if (item.type !== "widget") {
+      throw new Error(`Expected widget item, got ${item.type}`);
+    }
     expect(item.widget).toEqual({ type: "Card", children: [] });
   });
 });

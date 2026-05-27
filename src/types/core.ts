@@ -33,7 +33,7 @@ export type ThreadMetadata = z.infer<typeof ThreadMetadataSchema>;
 
 export const AttachmentUploadDescriptorSchema = z.object({
   url: z.string().url(),
-  method: z.string(),
+  method: z.enum(["POST", "PUT"]),
   headers: z.record(z.string(), z.string()).default({}),
 });
 export type AttachmentUploadDescriptor = z.infer<typeof AttachmentUploadDescriptorSchema>;
@@ -42,8 +42,9 @@ const AttachmentBaseSchema = z.object({
   id: z.string(),
   mime_type: z.string(),
   name: z.string(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-  upload_descriptor: AttachmentUploadDescriptorSchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+  upload_descriptor: AttachmentUploadDescriptorSchema.nullable().optional(),
+  thread_id: z.string().nullable().optional(),
 });
 
 export const FileAttachmentSchema = AttachmentBaseSchema.extend({
@@ -53,7 +54,7 @@ export type FileAttachment = z.infer<typeof FileAttachmentSchema>;
 
 export const ImageAttachmentSchema = AttachmentBaseSchema.extend({
   type: z.literal("image"),
-  preview_url: z.string().url().optional(),
+  preview_url: z.string().url(),
 });
 export type ImageAttachment = z.infer<typeof ImageAttachmentSchema>;
 
@@ -67,7 +68,7 @@ export const ThreadItemBaseSchema = z.object({
   id: z.string(),
   thread_id: z.string(),
   created_at: z.string().datetime(),
-}).passthrough();
+});
 
 export const UserMessageItemSchema = ThreadItemBaseSchema.extend({
   type: z.literal("user_message"),
@@ -110,10 +111,6 @@ export const SDKHiddenContextItemSchema = ThreadItemBaseSchema.extend({
 export const EndOfTurnItemSchema = ThreadItemBaseSchema.extend({
   type: z.literal("end_of_turn"),
 });
-
-export const GenericThreadItemSchema = ThreadItemBaseSchema.extend({
-  type: z.string(),
-}).passthrough();
 
 export const ThreadItemSchema = z.discriminatedUnion("type", [
   UserMessageItemSchema,
