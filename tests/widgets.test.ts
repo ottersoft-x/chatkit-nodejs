@@ -30,6 +30,7 @@ import {
   Title,
   Transition,
   Chart,
+  WidgetTemplate,
   type DynamicWidgetRoot,
 } from "../src/widgets";
 
@@ -159,5 +160,50 @@ describe("widgets", () => {
       "Transition",
       "Chart",
     ]);
+  });
+
+  const fixtureData: Record<string, Record<string, unknown> | undefined> = {
+    list_view_no_data: undefined,
+    card_no_data: undefined,
+    list_view_with_data: {
+      items: [
+        { id: "blue", label: "Blue line", color: "blue-500" },
+        { id: "orange", label: "Orange line", color: "orange-500" },
+        { id: "purple", label: "Purple line", color: "purple-500" },
+      ],
+    },
+    card_with_data: {
+      channel: "#proj-chatkit",
+      time: "4:48 PM",
+      user: { image: "/pam.png", name: "Pam Beesly" },
+    },
+  };
+
+  for (const [name, data] of Object.entries(fixtureData)) {
+    test(`renders ${name}.widget`, async () => {
+      const template = await WidgetTemplate.fromFile(`tests/assets/widgets/${name}.widget`);
+      const expected = await Bun.file(`tests/assets/widgets/${name}.json`).json();
+
+      expect(template.build(data)).toEqual(expected);
+    });
+  }
+
+  test("builds Basic roots through buildBasic", async () => {
+    const template = await WidgetTemplate.fromFile("tests/assets/widgets/basic_root.widget");
+    const expected = await Bun.file("tests/assets/widgets/basic_root.json").json();
+
+    const widget = template.buildBasic({
+      name: "Harry Potter",
+      bio: "The boy who lived",
+    });
+
+    expect(widget).toEqual(expected);
+    expect(widget.type).toBe("Basic");
+  });
+
+  test("throws on missing template variables", async () => {
+    const template = await WidgetTemplate.fromFile("tests/assets/widgets/basic_root.widget");
+
+    expect(() => template.build({ name: "Hermione Granger" })).toThrow();
   });
 });
