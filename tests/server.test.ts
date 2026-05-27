@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { ActionConfig } from "../src/actions";
 import { NotFoundError, UnsupportedOperationError } from "../src/errors";
-import { ChatKitServer, NonStreamingResult, StreamingResult } from "../src/server";
+import { ChatKitServer, NonStreamingResult, StreamCancelledError, StreamingResult } from "../src/server";
 import { SQLiteStore } from "../src/sqlite-store";
 import type { AttachmentStore } from "../src/store";
 import type { Attachment, ThreadItem, ThreadMetadata } from "../src/types/core";
@@ -25,6 +25,7 @@ type UserMessageItem = Extract<ThreadItem, { type: "user_message" }>;
 type AssistantMessageItem = Extract<ThreadItem, { type: "assistant_message" }>;
 type StructuredInputItem = Extract<ThreadItem, { type: "structured_input" }>;
 type WidgetItem = Extract<ThreadItem, { type: "widget" }>;
+type WorkflowItem = Extract<ThreadItem, { type: "workflow" }>;
 type Responder = (
   thread: ThreadMetadata,
   inputUserMessage: UserMessageItem | null,
@@ -115,6 +116,20 @@ function makeWidgetItem(threadId = "thr_test"): WidgetItem {
     thread_id: threadId,
     created_at: "2026-05-27T00:00:02.000Z",
     widget: { type: "Card", children: [] },
+  };
+}
+
+function makeWorkflowItem(threadId = "thr_test"): WorkflowItem {
+  return {
+    id: "workflow_test",
+    type: "workflow",
+    thread_id: threadId,
+    created_at: "2026-05-27T00:00:02.000Z",
+    workflow: {
+      type: "reasoning",
+      tasks: [],
+      expanded: false,
+    },
   };
 }
 
@@ -1232,6 +1247,250 @@ describe("ChatKitServer", () => {
         defaultContext,
       ),
     ).rejects.toBeInstanceOf(UnsupportedOperationError);
+  });
+
+  test("persists a non-empty pending assistant message and cancellation marker on stream cancellation", async () => {
+    const server = new TestServer(async function* (thread) {
+      const assistant = { ...makeAssistantMessage(""), id: "msg_pending", thread_id: thread.id };
+      yield { type: "thread.item.added", item: assistant };
+      yield {
+        type: "thread.item.updated",
+        item_id: assistant.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "Partial answer",
+        },
+      };
+      throw new StreamCancelledError();
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await expect(decodeStream(result)).rejects.toBeInstanceOf(StreamCancelledError);
+    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
+    expect(items.data.find((item) => item.id === "msg_pending")).toMatchObject({
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Partial answer", annotations: [] }],
+    });
+    expect(items.data.some((item) => item.type === "sdk_hidden_context")).toBe(true);
+  });
+
+  test("persists a cancellation marker without an empty pending assistant message on stream cancellation", async () => {
+    const server = new TestServer(async function* (thread) {
+      yield {
+        type: "thread.item.added",
+        item: { ...makeAssistantMessage(""), id: "msg_empty_pending", thread_id: thread.id },
+      };
+      throw new StreamCancelledError();
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await expect(decodeStream(result)).rejects.toBeInstanceOf(StreamCancelledError);
+    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
+    expect(items.data.some((item) => item.id === "msg_empty_pending")).toBe(false);
+    expect(items.data.some((item) => item.type === "sdk_hidden_context")).toBe(true);
+  });
+
+  test("streams a retryable stream error when the responder throws", async () => {
+    const server = new TestServer(async function* () {
+      throw new Error("Test error");
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.filter((event) => event.type === "error")).toEqual([
+      { type: "error", code: "stream.error", allow_retry: true },
+    ]);
+  });
+
+  test("replaces an item in the store from a thread item replaced event", async () => {
+    const server = new TestServer(async function* (thread) {
+      yield {
+        type: "thread.item.replaced",
+        item: { ...makeAssistantMessage("Replacement"), id: "msg_replace", thread_id: thread.id },
+      };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+    await server.store.addThreadItem(
+      thread.id,
+      { ...makeAssistantMessage("Original"), id: "msg_replace", thread_id: thread.id },
+      defaultContext,
+    );
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Replace it" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await decodeStream(result);
+    await expect(server.store.loadItem(thread.id, "msg_replace", defaultContext)).resolves.toMatchObject({
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Replacement", annotations: [] }],
+    });
+  });
+
+  test("removes an item from the store from a thread item removed event", async () => {
+    const server = new TestServer(async function* () {
+      yield { type: "thread.item.removed", item_id: "msg_remove" };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+    await server.store.addThreadItem(
+      thread.id,
+      { ...makeAssistantMessage("Remove me"), id: "msg_remove", thread_id: thread.id },
+      defaultContext,
+    );
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Remove it" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await decodeStream(result);
+    await expect(server.store.loadItem(thread.id, "msg_remove", defaultContext)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
+  test("persists pending workflow task updates once when the workflow item is done", async () => {
+    const server = new TestServer(async function* (thread) {
+      const workflow = makeWorkflowItem(thread.id);
+      const addedTask = {
+        type: "thought" as const,
+        title: "Thinking",
+        content: "Looking up context",
+        status_indicator: "loading" as const,
+      };
+      const updatedTask = {
+        ...addedTask,
+        content: "Found context",
+        status_indicator: "complete" as const,
+      };
+
+      yield { type: "thread.item.added", item: workflow };
+      yield {
+        type: "thread.item.updated",
+        item_id: workflow.id,
+        update: { type: "workflow.task.added", task_index: 0, task: addedTask },
+      };
+      yield {
+        type: "thread.item.updated",
+        item_id: workflow.id,
+        update: { type: "workflow.task.updated", task_index: 0, task: updatedTask },
+      };
+      yield { type: "thread.item.done", item: workflow };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Think" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await decodeStream(result);
+    await expect(server.store.loadItem(thread.id, "workflow_test", defaultContext)).resolves.toMatchObject({
+      type: "workflow",
+      workflow: {
+        tasks: [
+          {
+            type: "thought",
+            content: "Found context",
+            status_indicator: "complete",
+          },
+        ],
+      },
+    });
+    const persisted = await server.store.loadItem(thread.id, "workflow_test", defaultContext);
+    if (persisted.type !== "workflow") {
+      throw new Error("Expected workflow item");
+    }
+    expect(persisted.workflow.tasks).toHaveLength(1);
   });
 
   test("records cancellation marker without pending assistant messages", async () => {

@@ -47,6 +47,13 @@ export class NonStreamingResult {
   constructor(readonly json: Uint8Array) {}
 }
 
+export class StreamCancelledError extends Error {
+  constructor(message = "Stream cancelled") {
+    super(message);
+    this.name = "StreamCancelledError";
+  }
+}
+
 export abstract class ChatKitServer<TContext = unknown> {
   constructor(
     readonly store: Store<TContext>,
@@ -100,10 +107,12 @@ export abstract class ChatKitServer<TContext = unknown> {
 
   async handleStreamCancelled(
     thread: ThreadMetadata,
-    pendingAssistantMessages: AssistantMessageItem[],
+    pendingItems: ThreadItem[],
     context: TContext,
   ): Promise<void> {
-    const messagesToSave = pendingAssistantMessages.filter((message) => message.content.length > 0);
+    const messagesToSave = pendingItems.filter(
+      (item): item is AssistantMessageItem => item.type === "assistant_message" && item.content.length > 0,
+    );
 
     for (const message of messagesToSave) {
       await this.store.saveItem(thread.id, message, context);
@@ -519,6 +528,7 @@ export abstract class ChatKitServer<TContext = unknown> {
     yield { type: "stream_options", stream_options: this.getStreamOptions(thread, context) };
     let lastThread = structuredClone(thread);
     const pendingItems = new Map<string, ThreadItem>();
+    const updatedPendingItemIds = new Set<string>();
 
     try {
       for await (const rawEvent of stream()) {
@@ -527,16 +537,24 @@ export abstract class ChatKitServer<TContext = unknown> {
         if (event.type === "thread.item.added") {
           pendingItems.set(event.item.id, structuredClone(event.item));
         } else if (event.type === "thread.item.done") {
-          await this.store.addThreadItem(thread.id, event.item, context);
+          const pendingItem = pendingItems.get(event.item.id);
+          const itemToSave =
+            pendingItem && updatedPendingItemIds.has(event.item.id) ? pendingItem : event.item;
+          await this.store.addThreadItem(thread.id, itemToSave, context);
           pendingItems.delete(event.item.id);
+          updatedPendingItemIds.delete(event.item.id);
         } else if (event.type === "thread.item.removed") {
           await this.store.deleteThreadItem(thread.id, event.item_id, context);
           pendingItems.delete(event.item_id);
+          updatedPendingItemIds.delete(event.item_id);
         } else if (event.type === "thread.item.replaced") {
           await this.store.saveItem(thread.id, event.item, context);
           pendingItems.delete(event.item.id);
+          updatedPendingItemIds.delete(event.item.id);
         } else if (event.type === "thread.item.updated") {
-          this.updatePendingItems(pendingItems, event.item_id, event.update);
+          if (this.updatePendingItems(pendingItems, event.item_id, event.update)) {
+            updatedPendingItemIds.add(event.item_id);
+          }
         }
 
         if (!(event.type === "thread.item.done" && this.isHiddenItem(event.item))) {
@@ -549,7 +567,12 @@ export abstract class ChatKitServer<TContext = unknown> {
           yield { type: "thread.updated", thread: this.toThreadResponse(thread) };
         }
       }
-    } catch (_error) {
+    } catch (error) {
+      if (error instanceof StreamCancelledError) {
+        await this.handleStreamCancelled(thread, [...pendingItems.values()], context);
+        throw error;
+      }
+
       yield { type: "error", code: "stream.error", allow_retry: true };
     }
 
@@ -563,10 +586,10 @@ export abstract class ChatKitServer<TContext = unknown> {
     pendingItems: Map<string, ThreadItem>,
     itemId: string,
     update: ThreadItemUpdate,
-  ): void {
+  ): boolean {
     const item = pendingItems.get(itemId);
     if (!item) {
-      return;
+      return false;
     }
 
     if (
@@ -577,13 +600,18 @@ export abstract class ChatKitServer<TContext = unknown> {
         update.type === "assistant_message.content_part.done")
     ) {
       pendingItems.set(itemId, this.applyAssistantMessageUpdate(item, update));
+      return true;
     } else if (item.type === "workflow" && update.type === "workflow.task.added") {
       item.workflow.tasks.splice(update.task_index, 0, update.task);
       pendingItems.set(itemId, item);
+      return true;
     } else if (item.type === "workflow" && update.type === "workflow.task.updated") {
       item.workflow.tasks[update.task_index] = update.task;
       pendingItems.set(itemId, item);
+      return true;
     }
+
+    return false;
   }
 
   protected applyAssistantMessageUpdate(
