@@ -1493,6 +1493,78 @@ describe("ChatKitServer", () => {
     expect(persisted.workflow.tasks).toHaveLength(1);
   });
 
+  test("merges pending workflow task updates with final workflow fields on done", async () => {
+    const server = new TestServer(async function* (thread) {
+      const workflow = makeWorkflowItem(thread.id);
+      const addedTask = {
+        type: "thought" as const,
+        title: "Thinking",
+        content: "Looking up context",
+        status_indicator: "loading" as const,
+      };
+      const updatedTask = {
+        ...addedTask,
+        content: "Found context",
+        status_indicator: "complete" as const,
+      };
+      const doneWorkflow: WorkflowItem = {
+        ...workflow,
+        workflow: {
+          ...workflow.workflow,
+          summary: { title: "Finished", icon: "check" },
+          expanded: true,
+        },
+      };
+
+      yield { type: "thread.item.added", item: workflow };
+      yield {
+        type: "thread.item.updated",
+        item_id: workflow.id,
+        update: { type: "workflow.task.added", task_index: 0, task: addedTask },
+      };
+      yield {
+        type: "thread.item.updated",
+        item_id: workflow.id,
+        update: { type: "workflow.task.updated", task_index: 0, task: updatedTask },
+      };
+      yield { type: "thread.item.done", item: doneWorkflow };
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Think" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    await decodeStream(result);
+    await expect(server.store.loadItem(thread.id, "workflow_test", defaultContext)).resolves.toMatchObject({
+      type: "workflow",
+      workflow: {
+        expanded: true,
+        summary: { title: "Finished", icon: "check" },
+        tasks: [
+          {
+            type: "thought",
+            content: "Found context",
+            status_indicator: "complete",
+          },
+        ],
+      },
+    });
+  });
+
   test("records cancellation marker without pending assistant messages", async () => {
     const server = new TestServer();
     const thread = makeThread();

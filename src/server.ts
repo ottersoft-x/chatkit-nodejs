@@ -538,8 +538,11 @@ export abstract class ChatKitServer<TContext = unknown> {
           pendingItems.set(event.item.id, structuredClone(event.item));
         } else if (event.type === "thread.item.done") {
           const pendingItem = pendingItems.get(event.item.id);
-          const itemToSave =
-            pendingItem && updatedPendingItemIds.has(event.item.id) ? pendingItem : event.item;
+          const itemToSave = this.mergePendingUpdatesIntoDoneItem(
+            event.item,
+            pendingItem,
+            updatedPendingItemIds.has(event.item.id),
+          );
           await this.store.addThreadItem(thread.id, itemToSave, context);
           pendingItems.delete(event.item.id);
           updatedPendingItemIds.delete(event.item.id);
@@ -612,6 +615,32 @@ export abstract class ChatKitServer<TContext = unknown> {
     }
 
     return false;
+  }
+
+  protected mergePendingUpdatesIntoDoneItem(
+    doneItem: ThreadItem,
+    pendingItem: ThreadItem | undefined,
+    hasPendingUpdates: boolean,
+  ): ThreadItem {
+    if (!hasPendingUpdates || !pendingItem) {
+      return doneItem;
+    }
+
+    if (doneItem.type === "assistant_message" && pendingItem.type === "assistant_message") {
+      return { ...doneItem, content: pendingItem.content };
+    }
+
+    if (doneItem.type === "workflow" && pendingItem.type === "workflow") {
+      return {
+        ...doneItem,
+        workflow: {
+          ...doneItem.workflow,
+          tasks: pendingItem.workflow.tasks,
+        },
+      };
+    }
+
+    return doneItem;
   }
 
   protected applyAssistantMessageUpdate(
