@@ -95,6 +95,18 @@ describe("widgets", () => {
     });
   });
 
+  test("keeps catalogue component names when props include type", () => {
+    const widget = Card({
+      type: "Basic",
+      children: [Text({ type: "Card", value: "Hello" } as any)],
+    } as any);
+
+    expect(serializeWidget(widget)).toEqual({
+      type: "Card",
+      children: [{ type: "Text", value: "Hello" }],
+    });
+  });
+
   test("exports the Python widget component catalogue", () => {
     const catalogue = [
       Basic({ children: [] }),

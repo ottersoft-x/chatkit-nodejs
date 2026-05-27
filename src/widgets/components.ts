@@ -22,7 +22,7 @@ function component<TType extends string, TProps extends WidgetProps>(
   type: TType,
   props: TProps,
 ): { type: TType } & TProps {
-  return { type, ...props };
+  return { ...props, type };
 }
 
 type Children = DynamicWidgetComponent[];
