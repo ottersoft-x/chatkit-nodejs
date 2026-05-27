@@ -277,14 +277,14 @@ export const AssistantMessageContentPartTextDeltaSchema = z.object({
 export const AssistantMessageContentPartAnnotationAddedSchema = z.object({
   type: z.literal("assistant_message.content_part.annotation_added"),
   content_index: z.number().int().nonnegative(),
-  annotation_index: z.number().int().nonnegative().optional(),
+  annotation_index: z.number().int().nonnegative(),
   annotation: AnnotationSchema,
 });
 
 export const AssistantMessageContentPartDoneSchema = z.object({
   type: z.literal("assistant_message.content_part.done"),
   content_index: z.number().int().nonnegative(),
-  content: AssistantMessageContentSchema.optional(),
+  content: AssistantMessageContentSchema,
 });
 
 export const WorkflowTaskAddedSchema = z.object({
@@ -301,33 +301,27 @@ export const WorkflowTaskUpdatedSchema = z.object({
 
 export const GeneratedImageUpdatedSchema = z.object({
   type: z.literal("generated_image.updated"),
-  image: GeneratedImageSchema.nullable(),
+  image: GeneratedImageSchema,
   progress: z.number().nullable().optional(),
 });
 
-export const WidgetRootUpdatedSchema = z
-  .object({
-    type: z.literal("widget.root.updated"),
-    widget: JsonRecordSchema.optional(),
-  })
-  .catchall(z.unknown());
+export const WidgetRootUpdatedSchema = z.object({
+  type: z.literal("widget.root.updated"),
+  widget: JsonRecordSchema,
+});
 
-export const WidgetComponentUpdatedSchema = z
-  .object({
-    type: z.literal("widget.component.updated"),
-    component_id: z.string().optional(),
-    component: JsonRecordSchema.optional(),
-  })
-  .catchall(z.unknown());
+export const WidgetComponentUpdatedSchema = z.object({
+  type: z.literal("widget.component.updated"),
+  component_id: z.string(),
+  component: JsonRecordSchema,
+});
 
-export const WidgetStreamingTextValueDeltaSchema = z
-  .object({
-    type: z.literal("widget.streaming_text.value_delta"),
-    component_id: z.string(),
-    delta: z.string(),
-    done: z.boolean().default(false),
-  })
-  .catchall(z.unknown());
+export const WidgetStreamingTextValueDeltaSchema = z.object({
+  type: z.literal("widget.streaming_text.value_delta"),
+  component_id: z.string(),
+  delta: z.string(),
+  done: z.boolean(),
+});
 
 export const ThreadItemUpdateSchema = z.discriminatedUnion("type", [
   AssistantMessageContentPartAddedSchema,

@@ -123,4 +123,54 @@ describe("server request schemas", () => {
 
     expect(response.updated_item?.id).toBe("widget_1");
   });
+
+  test("rejects stream item updates missing required Python wire fields", () => {
+    const parseUpdate = (update: unknown) =>
+      ThreadStreamEventSchema.parse({
+        type: "thread.item.updated",
+        item_id: "item_1",
+        update,
+      });
+
+    expect(() =>
+      parseUpdate({
+        type: "assistant_message.content_part.annotation_added",
+        content_index: 0,
+        annotation: {
+          type: "annotation",
+          source: { type: "url", title: "Docs", url: "https://example.com" },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      parseUpdate({
+        type: "assistant_message.content_part.done",
+        content_index: 0,
+      }),
+    ).toThrow();
+
+    expect(() =>
+      parseUpdate({
+        type: "widget.streaming_text.value_delta",
+        component_id: "component_1",
+        delta: "Hello",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      parseUpdate({
+        type: "widget.streaming_text.value_delta",
+        delta: "Hello",
+        done: false,
+      }),
+    ).toThrow();
+
+    expect(() =>
+      parseUpdate({
+        type: "generated_image.updated",
+        image: null,
+      }),
+    ).toThrow();
+  });
 });
