@@ -450,6 +450,82 @@ describe("streamAgentResponse", () => {
     ]);
   });
 
+  test("ignores normalized response_done events without assistant messages", async () => {
+    const agentContext = createContext();
+
+    await expect(
+      collect(
+        streamAgentResponse(
+          agentContext,
+          streamedRun([
+            rawModel({
+              type: "response_done",
+              response: {
+                id: "resp_tool_only",
+                output: [
+                  {
+                    type: "tool_search_call",
+                    id: "tool_search_1",
+                    call_id: "call_1",
+                    execution: "server",
+                    arguments: {},
+                  },
+                ],
+                usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+              },
+            }),
+          ]),
+        ),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  test("does not emit duplicate assistant done events for later tool-only responses", async () => {
+    const agentContext = createContext();
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawModel({ type: "output_text_delta", delta: "Hello" }),
+          rawModel({
+            type: "response_done",
+            response: {
+              id: "resp_text",
+              output: [
+                {
+                  type: "message",
+                  id: "msg_real",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "Hello" }],
+                },
+              ],
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            },
+          }),
+          rawModel({
+            type: "response_done",
+            response: {
+              id: "resp_tool_only",
+              output: [
+                {
+                  type: "tool_search_call",
+                  id: "tool_search_1",
+                  call_id: "call_1",
+                  execution: "server",
+                  arguments: {},
+                },
+              ],
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            },
+          }),
+        ]),
+      ),
+    );
+
+    expect(events.filter((event) => event.type === "thread.item.done")).toHaveLength(1);
+  });
+
   test("maps provider response events wrapped in normalized model events", async () => {
     const agentContext = createContext();
     const events = await collect(

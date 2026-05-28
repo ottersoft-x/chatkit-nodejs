@@ -272,9 +272,13 @@ function convertSdkEvent<TContext>(
     case "response_done": {
       const response = isRecord(rawData.response) ? rawData.response : rawData;
       const item = firstAssistantMessageOutput(response);
+      if (!item) {
+        return [];
+      }
+
       const itemId =
         state.activeItemId ??
-        (item ? stringValue(item.id) : null) ??
+        stringValue(item.id) ??
         stringValue(response.id) ??
         context.store.generateItemId("message", context.thread, context.context);
       const fallbackText = state.textByPart.get(partKey(itemId, 0)) ?? "";
@@ -285,7 +289,7 @@ function convertSdkEvent<TContext>(
           item: assistantItem(
             context,
             itemId,
-            item ? assistantContentFromItem(item, fallbackText) : assistantContentFromItem({}, fallbackText),
+            assistantContentFromItem(item, fallbackText),
           ),
         },
       ];
