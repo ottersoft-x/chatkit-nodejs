@@ -19,7 +19,33 @@ function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
+export interface ResponseStreamConverterOptions {
+  partialImages?: number | null;
+}
+
 export class ResponseStreamConverter {
+  private readonly partialImages: number | null;
+
+  constructor(options: ResponseStreamConverterOptions = {}) {
+    this.partialImages = options.partialImages ?? null;
+  }
+
+  base64ImageToUrl(
+    _imageId: string,
+    base64Image: string,
+    _partialImageIndex: number | null = null,
+  ): string | Promise<string> {
+    return Promise.resolve(`data:image/png;base64,${base64Image}`);
+  }
+
+  partialImageIndexToProgress(partialImageIndex: number): number {
+    if (this.partialImages === null || this.partialImages <= 0) {
+      return 0;
+    }
+
+    return Math.min(1, partialImageIndex / this.partialImages);
+  }
+
   convertAnnotation(annotation: unknown): Annotation | null {
     if (!isRecord(annotation)) {
       return null;

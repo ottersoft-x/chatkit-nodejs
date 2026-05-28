@@ -328,6 +328,21 @@ describe("ResponseStreamConverter", () => {
   test("exports a shared default converter instance", () => {
     expect(defaultResponseStreamConverter).toBeInstanceOf(ResponseStreamConverter);
   });
+
+  test("converts base64 images to data URLs by default", async () => {
+    const converter = new ResponseStreamConverter();
+
+    await expect(converter.base64ImageToUrl("img_call_1", "dGVzdA==", null)).resolves.toBe(
+      "data:image/png;base64,dGVzdA==",
+    );
+  });
+
+  test("normalizes partial image progress from configured partial image count", () => {
+    expect(new ResponseStreamConverter().partialImageIndexToProgress(1)).toBe(0);
+    expect(new ResponseStreamConverter({ partialImages: 0 }).partialImageIndexToProgress(1)).toBe(0);
+    expect(new ResponseStreamConverter({ partialImages: 3 }).partialImageIndexToProgress(1)).toBe(1 / 3);
+    expect(new ResponseStreamConverter({ partialImages: 3 }).partialImageIndexToProgress(5)).toBe(1);
+  });
 });
 
 describe("AgentContext", () => {

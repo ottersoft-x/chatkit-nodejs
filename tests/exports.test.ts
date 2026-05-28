@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import * as exports from "../src";
+import type { ResponseStreamConverterOptions } from "../src";
 import {
   ActionConfigSchema,
   AgentContext,
@@ -24,6 +25,8 @@ import {
   streamAgentResponse,
   streamWidget,
 } from "../src";
+
+function assertResponseStreamConverterOptions(_options: ResponseStreamConverterOptions): void {}
 
 describe("public exports", () => {
   test("exports foundation APIs", () => {
@@ -50,5 +53,6 @@ describe("public exports", () => {
     expect(typeof streamAgentResponse).toBe("function");
     expect(typeof ResponseStreamConverter).toBe("function");
     expect(defaultResponseStreamConverter).toBeInstanceOf(ResponseStreamConverter);
+    assertResponseStreamConverterOptions({ partialImages: 3 });
   });
 });
