@@ -168,6 +168,10 @@ function rawResponse(data: Record<string, unknown>): unknown {
   return { type: "raw_response_event", data };
 }
 
+function rawModel(data: Record<string, unknown>): unknown {
+  return { type: "raw_model_stream_event", data };
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((innerResolve) => {
@@ -376,6 +380,108 @@ describe("streamAgentResponse", () => {
     ]);
   });
 
+  test("maps normalized assistant text events from the Agents SDK", async () => {
+    const agentContext = createContext();
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawModel({ type: "output_text_delta", delta: "Hello" }),
+          rawModel({ type: "output_text_delta", delta: ", world!" }),
+          rawModel({
+            type: "response_done",
+            response: {
+              id: "resp_1",
+              output: [
+                {
+                  type: "message",
+                  id: "msg_real",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: "Hello, world!" }],
+                },
+              ],
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            },
+          }),
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "message_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "assistant_message",
+          content: [],
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "message_generated",
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "Hello",
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "message_generated",
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: ", world!",
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "message_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "assistant_message",
+          content: [{ type: "output_text", text: "Hello, world!", annotations: [] }],
+        },
+      },
+    ]);
+  });
+
+  test("maps provider response events wrapped in normalized model events", async () => {
+    const agentContext = createContext();
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawModel({
+            type: "model",
+            event: {
+              type: "response.output_text.delta",
+              item_id: "msg_1",
+              content_index: 0,
+              delta: "nested",
+            },
+          }),
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.updated",
+        item_id: "msg_1",
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "nested",
+        },
+      },
+    ]);
+  });
+
   test("yields context events while waiting for SDK events", async () => {
     const agentContext = createContext();
     const gate = deferred();
@@ -535,6 +641,7 @@ describe("streamAgentResponse", () => {
                 type: "function_call",
                 id: "fc_123",
                 call_id: "call_123",
+                name: "get_selection",
               },
             },
           },
@@ -552,6 +659,73 @@ describe("streamAgentResponse", () => {
           type: "client_tool_call",
           status: "pending",
           call_id: "call_123",
+          name: "get_selection",
+          arguments: { includeHtml: true },
+        },
+      },
+    ]);
+  });
+
+  test("does not let unrelated tool metadata override the recorded client tool call", async () => {
+    const agentContext = createContext(new ThrowingToolCallIdStore());
+    agentContext.setClientToolCall(new ClientToolCall("get_selection", { includeHtml: true }));
+
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          {
+            type: "run_item_stream_event",
+            item: {
+              type: "tool_call_item",
+              toolName: "other_tool",
+              rawItem: {
+                type: "function_call",
+                id: "fc_unrelated",
+                callId: "call_unrelated",
+                name: "other_tool",
+              },
+            },
+          },
+          {
+            type: "run_item_stream_event",
+            item: {
+              type: "tool_call_item",
+              toolName: "get_selection",
+              raw_item: {
+                type: "function_call",
+                id: "fc_selection",
+                call_id: "call_selection",
+                name: "get_selection",
+              },
+            },
+          },
+          {
+            type: "run_item_stream_event",
+            item: {
+              type: "tool_call_item",
+              raw_item: {
+                type: "function_call",
+                id: "fc_other_latest",
+                call_id: "call_other_latest",
+                name: "other_tool",
+              },
+            },
+          },
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.done",
+        item: {
+          id: "fc_selection",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "client_tool_call",
+          status: "pending",
+          call_id: "call_selection",
           name: "get_selection",
           arguments: { includeHtml: true },
         },

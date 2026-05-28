@@ -41,6 +41,18 @@ function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
+function firstStringValue(...values: unknown[]): string | null {
+  for (const value of values) {
+    const text = stringValue(value);
+
+    if (text !== null) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
 function normalizeStream(streamedRun: AgentStreamInput | AsyncIterable<unknown>): AsyncIterable<unknown> {
   if (isRecord(streamedRun) && typeof streamedRun.toStream === "function") {
     return streamedRun.toStream();
@@ -62,6 +74,10 @@ function rawResponseData(event: unknown): UnknownRecord | null {
     (event.type === "raw_response_event" || event.type === "raw_model_stream_event") &&
     isRecord(event.data)
   ) {
+    if (event.data.type === "model" && isRecord(event.data.event)) {
+      return rawResponseData(event.data.event);
+    }
+
     return event.data;
   }
 
@@ -118,7 +134,51 @@ function assistantContentFromItem(
     : [];
 }
 
-function trackToolCallMetadata(event: unknown): ToolCallMetadata | null {
+function firstAssistantMessageOutput(response: UnknownRecord): UnknownRecord | null {
+  const output = Array.isArray(response.output) ? response.output : [];
+
+  for (const item of output) {
+    if (
+      isRecord(item) &&
+      item.type === "message" &&
+      (item.role === undefined || item.role === "assistant")
+    ) {
+      return item;
+    }
+  }
+
+  return null;
+}
+
+function ensureAssistantMessageAdded<TContext>(
+  context: AgentContext<TContext>,
+  state: AssistantTextState,
+): Extract<ThreadStreamEvent, { type: "thread.item.added" }> {
+  const itemId = context.store.generateItemId("message", context.thread, context.context);
+  state.activeItemId = itemId;
+
+  return {
+    type: "thread.item.added",
+    item: assistantItem(context, itemId, []),
+  };
+}
+
+function toolCallName(item: UnknownRecord, rawItem: UnknownRecord): string | null {
+  return firstStringValue(
+    rawItem.name,
+    rawItem.toolName,
+    rawItem.tool_name,
+    item.toolName,
+    item.tool_name,
+    item.name,
+  );
+}
+
+function trackToolCallMetadata(event: unknown, expectedToolName: string | null): ToolCallMetadata | null {
+  if (!expectedToolName) {
+    return null;
+  }
+
   if (!isRecord(event) || event.type !== "run_item_stream_event" || !isRecord(event.item)) {
     return null;
   }
@@ -135,13 +195,13 @@ function trackToolCallMetadata(event: unknown): ToolCallMetadata | null {
       ? item.rawItem
       : item;
 
+  if (toolCallName(item, rawItem) !== expectedToolName) {
+    return null;
+  }
+
   return {
-    itemId: stringValue(rawItem.id) ?? stringValue(item.id),
-    callId:
-      stringValue(rawItem.call_id) ??
-      stringValue(rawItem.callId) ??
-      stringValue(item.call_id) ??
-      stringValue(item.callId),
+    itemId: firstStringValue(rawItem.id, item.id),
+    callId: firstStringValue(rawItem.call_id, rawItem.callId, item.call_id, item.callId),
   };
 }
 
@@ -173,6 +233,58 @@ function convertSdkEvent<TContext>(
   }
 
   switch (rawData.type) {
+    case "output_text_delta": {
+      const events: ThreadStreamEvent[] = [];
+      const explicitItemId = stringValue(rawData.item_id);
+      let itemId = explicitItemId ?? state.activeItemId;
+
+      if (!itemId) {
+        const added = ensureAssistantMessageAdded(context, state);
+        events.push(added);
+        itemId = added.item.id;
+      }
+      state.activeItemId ??= itemId;
+
+      const contentIndex = numberValue(rawData.content_index) ?? 0;
+      const delta = stringValue(rawData.delta) ?? "";
+      const key = partKey(itemId, contentIndex);
+      state.textByPart.set(key, `${state.textByPart.get(key) ?? ""}${delta}`);
+
+      events.push({
+        type: "thread.item.updated",
+        item_id: itemId,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: contentIndex,
+          delta,
+        },
+      });
+
+      return events;
+    }
+
+    case "response_done": {
+      const response = isRecord(rawData.response) ? rawData.response : rawData;
+      const item = firstAssistantMessageOutput(response);
+      const itemId =
+        state.activeItemId ??
+        (item ? stringValue(item.id) : null) ??
+        stringValue(response.id) ??
+        context.store.generateItemId("message", context.thread, context.context);
+      const fallbackText = state.textByPart.get(partKey(itemId, 0)) ?? "";
+
+      return [
+        {
+          type: "thread.item.done",
+          item: assistantItem(
+            context,
+            itemId,
+            item ? assistantContentFromItem(item, fallbackText) : assistantContentFromItem({}, fallbackText),
+          ),
+        },
+      ];
+    }
+
     case "response.output_item.added": {
       const item = isRecord(rawData.item) ? rawData.item : null;
 
@@ -372,7 +484,9 @@ export async function* streamAgentResponse<TContext>(
       }
 
       sdkNext = tagNext("sdk", sdkIterator.next());
-      latestToolCallMetadata = trackToolCallMetadata(next.result.value) ?? latestToolCallMetadata;
+      latestToolCallMetadata =
+        trackToolCallMetadata(next.result.value, context.getClientToolCall()?.name ?? null) ??
+        latestToolCallMetadata;
 
       for (const event of convertSdkEvent(context, state, next.result.value)) {
         yield ThreadStreamEventSchema.parse(event);
