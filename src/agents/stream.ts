@@ -833,7 +833,7 @@ export async function* streamAgentResponse<TContext>(
           contextDone = true;
         } else {
           contextNext = tagNext("context", contextIterator.next());
-          const value = ThreadStreamEventSchema.parse(next.result.value);
+          const value = next.result.value as ThreadStreamEvent;
 
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
             yield ThreadStreamEventSchema.parse(event);
