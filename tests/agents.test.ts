@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents";
+import { ResponseStreamConverter, defaultResponseStreamConverter } from "../src/agents/annotations";
 import { BaseStore, type StoreItemType } from "../src/store";
 import type { Attachment, Page, ThreadItem, ThreadMetadata } from "../src/types/core";
 import type { ThreadStreamEvent } from "../src/types/server";
@@ -241,6 +242,90 @@ function assertClientToolCallArgumentTypes(): void {
   // @ts-expect-error nested client tool arguments must be JSON-compatible.
   new ClientToolCall("invalid", { nested: { callback: () => undefined } });
 }
+
+describe("ResponseStreamConverter", () => {
+  test("converts default citation annotations", () => {
+    const converter = new ResponseStreamConverter();
+
+    expect(
+      converter.convertAnnotation({
+        type: "file_citation",
+        file_id: "file_123",
+        filename: "report.pdf",
+        index: 12,
+      }),
+    ).toEqual({
+      source: { type: "file", filename: "report.pdf", title: "report.pdf" },
+      index: 12,
+    });
+
+    expect(
+      converter.convertAnnotation({
+        type: "container_file_citation",
+        container_id: "container_1",
+        file_id: "file_123",
+        filename: "container.txt",
+        start_index: 1,
+        end_index: 9,
+      }),
+    ).toEqual({
+      source: { type: "file", filename: "container.txt", title: "container.txt" },
+      index: 9,
+    });
+
+    expect(
+      converter.convertAnnotation({
+        type: "url_citation",
+        url: "https://example.com/report",
+        title: "Example Report",
+        start_index: 3,
+        end_index: 15,
+      }),
+    ).toEqual({
+      source: {
+        type: "url",
+        url: "https://example.com/report",
+        title: "Example Report",
+      },
+      index: 15,
+    });
+  });
+
+  test("drops invalid or unsupported citation annotations", () => {
+    const converter = new ResponseStreamConverter();
+
+    expect(
+      converter.convertAnnotation({
+        type: "file_citation",
+        file_id: "file_123",
+        filename: "",
+        index: 0,
+      }),
+    ).toBeNull();
+    expect(
+      converter.convertAnnotation({
+        type: "container_file_citation",
+        container_id: "container_1",
+        file_id: "file_123",
+        filename: "",
+        end_index: 4,
+      }),
+    ).toBeNull();
+    expect(
+      converter.convertAnnotation({
+        type: "url_citation",
+        url: "https://example.com",
+        end_index: 4,
+      }),
+    ).toBeNull();
+    expect(converter.convertAnnotation({ type: "unknown" })).toBeNull();
+    expect(converter.convertAnnotation(null)).toBeNull();
+  });
+
+  test("exports a shared default converter instance", () => {
+    expect(defaultResponseStreamConverter).toBeInstanceOf(ResponseStreamConverter);
+  });
+});
 
 describe("AgentContext", () => {
   test("stores thread, store, request context, and deterministic timestamps", () => {

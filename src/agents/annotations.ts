@@ -1,0 +1,91 @@
+import type { Annotation } from "../types/core";
+
+type UnknownRecord = Record<string, unknown>;
+type DefaultableAnnotation = Omit<Annotation, "type"> & Partial<Pick<Annotation, "type">>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function nonEmptyStringValue(value: unknown): string | null {
+  const text = stringValue(value);
+  return text && text.length > 0 ? text : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+export class ResponseStreamConverter {
+  convertAnnotation(annotation: unknown): DefaultableAnnotation | null {
+    if (!isRecord(annotation)) {
+      return null;
+    }
+
+    switch (annotation.type) {
+      case "file_citation":
+        return this.fileCitationToAnnotation(annotation);
+      case "container_file_citation":
+        return this.containerFileCitationToAnnotation(annotation);
+      case "url_citation":
+        return this.urlCitationToAnnotation(annotation);
+      default:
+        return null;
+    }
+  }
+
+  fileCitationToAnnotation(annotation: unknown): DefaultableAnnotation | null {
+    if (!isRecord(annotation)) {
+      return null;
+    }
+
+    const filename = nonEmptyStringValue(annotation.filename);
+    if (!filename) {
+      return null;
+    }
+
+    return {
+      source: { type: "file", filename, title: filename },
+      index: numberValue(annotation.index),
+    };
+  }
+
+  containerFileCitationToAnnotation(annotation: unknown): DefaultableAnnotation | null {
+    if (!isRecord(annotation)) {
+      return null;
+    }
+
+    const filename = nonEmptyStringValue(annotation.filename);
+    if (!filename) {
+      return null;
+    }
+
+    return {
+      source: { type: "file", filename, title: filename },
+      index: numberValue(annotation.end_index),
+    };
+  }
+
+  urlCitationToAnnotation(annotation: unknown): DefaultableAnnotation | null {
+    if (!isRecord(annotation)) {
+      return null;
+    }
+
+    const url = nonEmptyStringValue(annotation.url);
+    const title = nonEmptyStringValue(annotation.title);
+    if (!url || !title) {
+      return null;
+    }
+
+    return {
+      source: { type: "url", url, title },
+      index: numberValue(annotation.end_index),
+    };
+  }
+}
+
+export const defaultResponseStreamConverter = new ResponseStreamConverter();
