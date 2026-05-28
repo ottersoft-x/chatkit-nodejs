@@ -10,6 +10,18 @@ interface AssistantTextState {
   textByPart: Map<string, string>;
 }
 
+type StreamSource = "sdk" | "context";
+
+interface TaggedNextResult<T> {
+  source: StreamSource;
+  result: IteratorResult<T>;
+}
+
+interface TaggedNext<T> {
+  promise: Promise<TaggedNextResult<T>>;
+  result: TaggedNextResult<T> | null;
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
 }
@@ -133,10 +145,20 @@ function trackToolCallMetadata(event: unknown): ToolCallMetadata | null {
   };
 }
 
-async function settledResult<T>(promise: Promise<IteratorResult<T>>): Promise<IteratorResult<T> | null> {
-  const notReady = Symbol("notReady");
-  const result = await Promise.race([promise, Promise.resolve(notReady)]);
-  return result === notReady ? null : (result as IteratorResult<T>);
+function tagNext<T>(source: StreamSource, promise: PromiseLike<IteratorResult<T>>): TaggedNext<T> {
+  const tagged: TaggedNext<T> = {
+    promise: Promise.resolve(null as never),
+    result: null,
+  };
+
+  tagged.promise = Promise.resolve(promise).then((result) => {
+    const taggedResult = { source, result };
+    tagged.result = taggedResult;
+    return taggedResult;
+  });
+  tagged.promise.catch(() => undefined);
+
+  return tagged;
 }
 
 function convertSdkEvent<TContext>(
@@ -284,33 +306,32 @@ export async function* streamAgentResponse<TContext>(
   let latestToolCallMetadata: ToolCallMetadata | null = null;
   let sdkDone = false;
   let contextDone = false;
-  let sdkNext = sdkIterator.next();
-  let contextNext = contextIterator.next();
+  let sdkNext = tagNext("sdk", sdkIterator.next());
+  let contextNext = tagNext("context", contextIterator.next());
 
   try {
     while (!sdkDone || !contextDone) {
-      if (!contextDone) {
-        const readyContextResult = await settledResult(contextNext);
+      await Promise.resolve();
 
-        if (readyContextResult) {
-          if (readyContextResult.done) {
-            contextDone = true;
-          } else {
-            contextNext = contextIterator.next();
-            yield ThreadStreamEventSchema.parse(readyContextResult.value);
-          }
-          continue;
+      if (!contextDone && contextNext.result) {
+        if (contextNext.result.result.done) {
+          contextDone = true;
+        } else {
+          const value = contextNext.result.result.value;
+          contextNext = tagNext("context", contextIterator.next());
+          yield ThreadStreamEventSchema.parse(value);
         }
+        continue;
       }
 
-      const contenders: Array<Promise<{ source: "sdk" | "context"; result: IteratorResult<unknown> }>> = [];
+      const contenders: Array<Promise<TaggedNextResult<unknown>>> = [];
 
       if (!contextDone) {
-        contenders.push(contextNext.then((result) => ({ source: "context", result })));
+        contenders.push(contextNext.promise);
       }
 
       if (!sdkDone) {
-        contenders.push(sdkNext.then((result) => ({ source: "sdk", result })));
+        contenders.push(sdkNext.promise);
       }
 
       if (contenders.length === 0) {
@@ -319,11 +340,26 @@ export async function* streamAgentResponse<TContext>(
 
       const next = await Promise.race(contenders);
 
+      if (next.source === "sdk" && !contextDone) {
+        await Promise.resolve();
+
+        if (contextNext.result) {
+          if (contextNext.result.result.done) {
+            contextDone = true;
+          } else {
+            const value = contextNext.result.result.value;
+            contextNext = tagNext("context", contextIterator.next());
+            yield ThreadStreamEventSchema.parse(value);
+            continue;
+          }
+        }
+      }
+
       if (next.source === "context") {
         if (next.result.done) {
           contextDone = true;
         } else {
-          contextNext = contextIterator.next();
+          contextNext = tagNext("context", contextIterator.next());
           yield ThreadStreamEventSchema.parse(next.result.value);
         }
         continue;
@@ -335,7 +371,7 @@ export async function* streamAgentResponse<TContext>(
         continue;
       }
 
-      sdkNext = sdkIterator.next();
+      sdkNext = tagNext("sdk", sdkIterator.next());
       latestToolCallMetadata = trackToolCallMetadata(next.result.value) ?? latestToolCallMetadata;
 
       for (const event of convertSdkEvent(context, state, next.result.value)) {

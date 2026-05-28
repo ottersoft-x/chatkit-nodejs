@@ -152,6 +152,32 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+function countedDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+  thenCount: () => number;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  let thenCount = 0;
+  const innerPromise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  const promise = {
+    then<TResult1 = T, TResult2 = never>(
+      onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ): Promise<TResult1 | TResult2> {
+      thenCount += 1;
+      return innerPromise.then(onfulfilled, onrejected);
+    },
+  } as Promise<T>;
+
+  return { promise, resolve, reject, thenCount: () => thenCount };
+}
+
 function assertClientToolCallArgumentTypes(): void {
   new ClientToolCall("valid", {
     includeHtml: true,
@@ -366,6 +392,53 @@ describe("streamAgentResponse", () => {
       },
     });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  test("reuses a pending SDK next promise while context events win races", async () => {
+    const agentContext = createContext();
+    const pendingSdk = countedDeferred<IteratorResult<unknown>>();
+    const sdkEvents = {
+      [Symbol.asyncIterator](): AsyncIterator<unknown> {
+        let calls = 0;
+
+        return {
+          next(): Promise<IteratorResult<unknown>> {
+            calls += 1;
+
+            if (calls === 1) {
+              return pendingSdk.promise;
+            }
+
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+      },
+    };
+    const iterator = streamAgentResponse(agentContext, sdkEvents)[Symbol.asyncIterator]();
+    const first = iterator.next();
+
+    await Promise.resolve();
+    agentContext.stream({ type: "progress_update", icon: null, text: "First context" });
+
+    await expect(first).resolves.toEqual({
+      done: false,
+      value: { type: "progress_update", icon: null, text: "First context" },
+    });
+
+    const second = iterator.next();
+
+    await Promise.resolve();
+    agentContext.stream({ type: "progress_update", icon: null, text: "Second context" });
+
+    await expect(second).resolves.toEqual({
+      done: false,
+      value: { type: "progress_update", icon: null, text: "Second context" },
+    });
+    expect(pendingSdk.thenCount()).toBe(1);
+
+    pendingSdk.reject(new Error("SDK stream failed"));
+
+    await expect(iterator.next()).rejects.toThrow("SDK stream failed");
   });
 
   test("prefers queued context events over ready SDK events", async () => {
