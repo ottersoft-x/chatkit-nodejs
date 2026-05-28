@@ -6,3 +6,4 @@ export * from "./sqlite-store";
 export * from "./store";
 export * from "./types/core";
 export * from "./types/server";
+export * from "./widgets";
