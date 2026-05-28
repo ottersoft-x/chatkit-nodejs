@@ -1,6 +1,12 @@
-import type { ThreadItem } from "../types/core";
+import type { ThreadItem, Workflow, WorkflowSummary } from "../types/core";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server";
 import type { AgentContextOptions, JsonObject } from "./types";
+import {
+  createWorkflowItem,
+  finishWorkflow,
+  shouldEmitWorkflowAdded,
+  workflowAddedEvent,
+} from "./workflows";
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
@@ -100,6 +106,23 @@ export class AgentContext<TContext> {
 
   closeEvents(): void {
     this.queue.close();
+  }
+
+  startWorkflow(workflow: Workflow): void {
+    const item = createWorkflowItem(this, workflow);
+    this.workflowItem = item;
+
+    if (shouldEmitWorkflowAdded(item.workflow)) {
+      this.stream(workflowAddedEvent(item));
+    }
+  }
+
+  endWorkflow(summary?: WorkflowSummary, expanded = false): void {
+    const event = finishWorkflow(this, summary, expanded);
+
+    if (event) {
+      this.stream(event);
+    }
   }
 
   setClientToolCall(toolCall: ClientToolCall): void {

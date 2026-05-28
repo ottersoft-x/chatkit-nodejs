@@ -3,7 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents";
 import { ResponseStreamConverter, defaultResponseStreamConverter } from "../src/agents/annotations";
 import { BaseStore, type StoreItemType } from "../src/store";
-import type { Annotation, Attachment, Page, ThreadItem, ThreadMetadata } from "../src/types/core";
+import type {
+  Annotation,
+  Attachment,
+  Page,
+  ThreadItem,
+  ThreadMetadata,
+  WorkflowSummary,
+} from "../src/types/core";
 import type { ThreadStreamEvent } from "../src/types/server";
 
 interface RequestContext {
@@ -377,6 +384,181 @@ describe("AgentContext", () => {
     expect(agentContext.workflowItem).toBe(workflow);
 
     agentContext.workflowItem = null;
+    expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("starts reasoning workflows immediately", async () => {
+    const agentContext = createContext();
+
+    agentContext.startWorkflow({ type: "reasoning", tasks: [], expanded: false });
+    agentContext.closeEvents();
+
+    await expect(collect(agentContext.events())).resolves.toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: { type: "reasoning", tasks: [], expanded: false },
+        },
+      },
+    ]);
+    expect(agentContext.workflowItem).toEqual({
+      id: "workflow_generated",
+      thread_id: "thr_1",
+      created_at: now,
+      type: "workflow",
+      workflow: { type: "reasoning", tasks: [], expanded: false },
+    });
+  });
+
+  test("defers empty custom workflow added events until a task is available", async () => {
+    const agentContext = createContext();
+
+    agentContext.startWorkflow({ type: "custom", tasks: [], expanded: false });
+    agentContext.closeEvents();
+
+    await expect(collect(agentContext.events())).resolves.toEqual([]);
+    expect(agentContext.workflowItem).toEqual({
+      id: "workflow_generated",
+      thread_id: "thr_1",
+      created_at: now,
+      type: "workflow",
+      workflow: { type: "custom", tasks: [], expanded: false },
+    });
+  });
+
+  test("ends workflows with duration summaries by default", async () => {
+    const agentContext = createContext();
+
+    agentContext.startWorkflow({
+      type: "custom",
+      tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+      expanded: true,
+    });
+    agentContext.endWorkflow();
+    agentContext.closeEvents();
+
+    await expect(collect(agentContext.events())).resolves.toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+            expanded: true,
+          },
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+            summary: { duration: 0 },
+            expanded: false,
+          },
+        },
+      },
+    ]);
+    expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("ends workflows with explicit summaries and expanded state", async () => {
+    const agentContext = createContext();
+    const summary: WorkflowSummary = { title: "Complete", icon: "check" };
+
+    agentContext.startWorkflow({
+      type: "custom",
+      tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+      expanded: false,
+    });
+    agentContext.endWorkflow(summary, true);
+    agentContext.closeEvents();
+
+    await expect(collect(agentContext.events())).resolves.toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+            expanded: false,
+          },
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+            summary,
+            expanded: true,
+          },
+        },
+      },
+    ]);
+    expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("preserves existing workflow summaries when ending without an explicit summary", async () => {
+    const agentContext = createContext();
+
+    agentContext.startWorkflow({
+      type: "custom",
+      tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+      summary: { title: "Already summarized" },
+      expanded: true,
+    });
+    agentContext.endWorkflow();
+    agentContext.closeEvents();
+
+    const events = await collect(agentContext.events());
+    expect(events.at(-1)).toEqual({
+      type: "thread.item.done",
+      item: {
+        id: "workflow_generated",
+        thread_id: "thr_1",
+        created_at: now,
+        type: "workflow",
+        workflow: {
+          type: "custom",
+          tasks: [{ type: "custom", title: "Fetch data", status_indicator: "complete" }],
+          summary: { title: "Already summarized" },
+          expanded: false,
+        },
+      },
+    });
+    expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("ending without an active workflow is a no-op", async () => {
+    const agentContext = createContext();
+
+    agentContext.endWorkflow();
+    agentContext.closeEvents();
+
+    await expect(collect(agentContext.events())).resolves.toEqual([]);
     expect(agentContext.workflowItem).toBeNull();
   });
 
