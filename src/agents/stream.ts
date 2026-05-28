@@ -1,4 +1,4 @@
-import type { AssistantMessageContent } from "../types/core";
+import type { AssistantMessageContent, ThreadItem } from "../types/core";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server";
 import { convertTextContentPart, defaultResponseStreamConverter } from "./annotations";
 import type { ResponseStreamConverter } from "./annotations";
@@ -7,10 +7,18 @@ import type { AgentStreamInput, StreamAgentResponseOptions, ToolCallMetadata } f
 
 type UnknownRecord = Record<string, unknown>;
 
+type GeneratedImageItem = Extract<ThreadItem, { type: "generated_image" }>;
+
+interface GeneratedImageState {
+  callId: string | null;
+  item: GeneratedImageItem;
+}
+
 interface AssistantTextState {
   activeItemId: string | null;
   textByPart: Map<string, string>;
   annotationCountByPart: Map<string, number>;
+  generatedImage: GeneratedImageState | null;
 }
 
 type StreamSource = "sdk" | "context";
@@ -139,6 +147,20 @@ function assistantItem<TContext>(
   };
 }
 
+function generatedImageItem<TContext>(
+  context: AgentContext<TContext>,
+  itemId: string,
+  image: GeneratedImageItem["image"],
+): GeneratedImageItem {
+  return {
+    id: itemId,
+    thread_id: context.thread.id,
+    created_at: context.createdAt(),
+    type: "generated_image",
+    image,
+  };
+}
+
 function assistantContentFromItem(
   item: UnknownRecord,
   fallbackText: string,
@@ -247,12 +269,12 @@ function tagNext<T>(source: StreamSource, promise: PromiseLike<IteratorResult<T>
   return tagged;
 }
 
-function convertSdkEvent<TContext>(
+async function convertSdkEvent<TContext>(
   context: AgentContext<TContext>,
   state: AssistantTextState,
   event: unknown,
   converter: ResponseStreamConverter,
-): ThreadStreamEvent[] {
+): Promise<ThreadStreamEvent[]> {
   const rawData = rawResponseData(event);
 
   if (!rawData) {
@@ -320,7 +342,25 @@ function convertSdkEvent<TContext>(
     case "response.output_item.added": {
       const item = isRecord(rawData.item) ? rawData.item : null;
 
-      if (!item || item.type !== "message") {
+      if (!item) {
+        return [];
+      }
+
+      if (item.type === "image_generation_call") {
+        const callId = stringValue(item.id);
+        const itemId = context.store.generateItemId("message", context.thread, context.context);
+        const generated = generatedImageItem(context, itemId, null);
+        state.generatedImage = { callId, item: generated };
+
+        return [
+          {
+            type: "thread.item.added",
+            item: generated,
+          },
+        ];
+      }
+
+      if (item.type !== "message") {
         return [];
       }
 
@@ -356,6 +396,39 @@ function convertSdkEvent<TContext>(
             type: "assistant_message.content_part.text_delta",
             content_index: contentIndex,
             delta,
+          },
+        },
+      ];
+    }
+
+    case "response.image_generation_call.partial_image": {
+      const imageId = stringValue(rawData.item_id);
+      const base64Image = stringValue(rawData.partial_image_b64);
+      const partialImageIndex = numberValue(rawData.partial_image_index);
+      const generatedImage = state.generatedImage;
+
+      if (!generatedImage || !imageId || !base64Image || partialImageIndex === null) {
+        return [];
+      }
+
+      if (generatedImage.callId !== null && imageId !== generatedImage.callId) {
+        return [];
+      }
+
+      const image = {
+        id: imageId,
+        url: await converter.base64ImageToUrl(imageId, base64Image, partialImageIndex),
+      };
+      state.generatedImage = { ...generatedImage, item: { ...generatedImage.item, image } };
+
+      return [
+        {
+          type: "thread.item.updated",
+          item_id: generatedImage.item.id,
+          update: {
+            type: "generated_image.updated",
+            image,
+            progress: converter.partialImageIndexToProgress(partialImageIndex),
           },
         },
       ];
@@ -414,7 +487,49 @@ function convertSdkEvent<TContext>(
     case "response.output_item.done": {
       const item = isRecord(rawData.item) ? rawData.item : null;
 
-      if (!item || item.type !== "message") {
+      if (!item) {
+        return [];
+      }
+
+      if (item.type === "image_generation_call") {
+        const imageId = stringValue(item.id);
+        const result = stringValue(item.result);
+        const generatedImage = state.generatedImage;
+
+        if (!generatedImage) {
+          return [];
+        }
+
+        if (generatedImage.callId !== null && imageId !== generatedImage.callId) {
+          return [];
+        }
+
+        if (!result) {
+          state.generatedImage = null;
+          return [];
+        }
+
+        if (!imageId) {
+          state.generatedImage = null;
+          return [];
+        }
+
+        const image = {
+          id: imageId,
+          url: await converter.base64ImageToUrl(imageId, result, null),
+        };
+        const doneItem = { ...generatedImage.item, image };
+        state.generatedImage = null;
+
+        return [
+          {
+            type: "thread.item.done",
+            item: doneItem,
+          },
+        ];
+      }
+
+      if (item.type !== "message") {
         return [];
       }
 
@@ -480,6 +595,7 @@ export async function* streamAgentResponse<TContext>(
     activeItemId: null,
     textByPart: new Map(),
     annotationCountByPart: new Map(),
+    generatedImage: null,
   };
   const toolCallMetadataByName = new Map<string, ToolCallMetadata>();
   let sdkDone = false;
@@ -556,7 +672,7 @@ export async function* streamAgentResponse<TContext>(
         toolCallMetadataByName.set(metadata.name, metadata.metadata);
       }
 
-      for (const event of convertSdkEvent(context, state, next.result.value, converter)) {
+      for (const event of await convertSdkEvent(context, state, next.result.value, converter)) {
         yield ThreadStreamEventSchema.parse(event);
       }
     }
