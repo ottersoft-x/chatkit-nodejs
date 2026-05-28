@@ -1631,7 +1631,7 @@ describe("streamAgentResponse", () => {
       type: "workflow",
       workflow: {
         type: "custom",
-        tasks: [],
+        tasks: [{ type: "custom", title: "Test", status_indicator: "complete" }],
         summary: { title: "Test" },
         expanded: true,
       },
@@ -1659,7 +1659,7 @@ describe("streamAgentResponse", () => {
           type: "workflow",
           workflow: {
             type: "custom",
-            tasks: [],
+            tasks: [{ type: "custom", title: "Test", status_indicator: "complete" }],
             summary: { title: "Test" },
             expanded: false,
           },
@@ -1677,6 +1677,67 @@ describe("streamAgentResponse", () => {
       },
     ]);
     expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("merges context workflow helper events with SDK stream events", async () => {
+    const agentContext = createContext();
+
+    agentContext.addWorkflowTask({ type: "custom", title: "Prepare", status_indicator: "complete" });
+    agentContext.endWorkflow({ title: "Prepared" });
+
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "message", id: "msg_1" },
+          }),
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Prepare", status_indicator: "complete" }],
+            expanded: false,
+          },
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "custom",
+            tasks: [{ type: "custom", title: "Prepare", status_indicator: "complete" }],
+            summary: { title: "Prepared" },
+            expanded: false,
+          },
+        },
+      },
+      {
+        type: "thread.item.added",
+        item: {
+          id: "msg_1",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "assistant_message",
+          content: [],
+        },
+      },
+    ]);
   });
 
   test("yields context events while waiting for SDK events", async () => {
