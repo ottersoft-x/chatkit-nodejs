@@ -288,14 +288,34 @@ function firstAssistantMessageOutput(response: UnknownRecord): UnknownRecord | n
 function ensureAssistantMessageAdded<TContext>(
   context: AgentContext<TContext>,
   state: AssistantTextState,
-): Extract<ThreadStreamEvent, { type: "thread.item.added" }> {
+): { itemId: string; events: ThreadStreamEvent[] } {
   const itemId = context.store.generateItemId("message", context.thread, context.context);
-  state.activeItemId = itemId;
 
   return {
+    itemId,
+    events: assistantMessageAddedEvents(context, state, itemId),
+  };
+}
+
+function assistantMessageAddedEvents<TContext>(
+  context: AgentContext<TContext>,
+  state: AssistantTextState,
+  itemId: string,
+): ThreadStreamEvent[] {
+  state.activeItemId = itemId;
+  const events: ThreadStreamEvent[] = [];
+  const workflowDone = endActiveWorkflow(context);
+
+  if (workflowDone) {
+    events.push(workflowDone);
+  }
+
+  events.push({
     type: "thread.item.added",
     item: assistantItem(context, itemId, []),
-  };
+  });
+
+  return events;
 }
 
 function toolCallName(item: UnknownRecord, rawItem: UnknownRecord): string | null {
@@ -377,8 +397,8 @@ async function convertSdkEvent<TContext>(
 
       if (!itemId) {
         const added = ensureAssistantMessageAdded(context, state);
-        events.push(added);
-        itemId = added.item.id;
+        events.push(...added.events);
+        itemId = added.itemId;
       }
       state.activeItemId ??= itemId;
 
@@ -471,20 +491,7 @@ async function convertSdkEvent<TContext>(
 
       const itemId =
         stringValue(item.id) ?? context.store.generateItemId("message", context.thread, context.context);
-      state.activeItemId = itemId;
-      const events: ThreadStreamEvent[] = [];
-      const workflowDone = endActiveWorkflow(context);
-
-      if (workflowDone) {
-        events.push(workflowDone);
-      }
-
-      events.push({
-        type: "thread.item.added",
-        item: assistantItem(context, itemId, []),
-      });
-
-      return events;
+      return assistantMessageAddedEvents(context, state, itemId);
     }
 
     case "response.output_text.delta": {
