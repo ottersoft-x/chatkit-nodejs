@@ -1,4 +1,4 @@
-import type { AssistantMessageContent } from "../types/core";
+import type { AssistantMessageContent, ThreadItem } from "../types/core";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server";
 import { convertTextContentPart, defaultResponseStreamConverter } from "./annotations";
 import type { ResponseStreamConverter } from "./annotations";
@@ -7,10 +7,13 @@ import type { AgentStreamInput, StreamAgentResponseOptions, ToolCallMetadata } f
 
 type UnknownRecord = Record<string, unknown>;
 
+type GeneratedImageItem = Extract<ThreadItem, { type: "generated_image" }>;
+
 interface AssistantTextState {
   activeItemId: string | null;
   textByPart: Map<string, string>;
   annotationCountByPart: Map<string, number>;
+  generatedImageItem: GeneratedImageItem | null;
 }
 
 type StreamSource = "sdk" | "context";
@@ -139,6 +142,20 @@ function assistantItem<TContext>(
   };
 }
 
+function generatedImageItem<TContext>(
+  context: AgentContext<TContext>,
+  itemId: string,
+  image: GeneratedImageItem["image"],
+): GeneratedImageItem {
+  return {
+    id: itemId,
+    thread_id: context.thread.id,
+    created_at: context.createdAt(),
+    type: "generated_image",
+    image,
+  };
+}
+
 function assistantContentFromItem(
   item: UnknownRecord,
   fallbackText: string,
@@ -247,12 +264,12 @@ function tagNext<T>(source: StreamSource, promise: PromiseLike<IteratorResult<T>
   return tagged;
 }
 
-function convertSdkEvent<TContext>(
+async function convertSdkEvent<TContext>(
   context: AgentContext<TContext>,
   state: AssistantTextState,
   event: unknown,
   converter: ResponseStreamConverter,
-): ThreadStreamEvent[] {
+): Promise<ThreadStreamEvent[]> {
   const rawData = rawResponseData(event);
 
   if (!rawData) {
@@ -320,7 +337,24 @@ function convertSdkEvent<TContext>(
     case "response.output_item.added": {
       const item = isRecord(rawData.item) ? rawData.item : null;
 
-      if (!item || item.type !== "message") {
+      if (!item) {
+        return [];
+      }
+
+      if (item.type === "image_generation_call") {
+        const itemId = context.store.generateItemId("message", context.thread, context.context);
+        const generated = generatedImageItem(context, itemId, null);
+        state.generatedImageItem = generated;
+
+        return [
+          {
+            type: "thread.item.added",
+            item: generated,
+          },
+        ];
+      }
+
+      if (item.type !== "message") {
         return [];
       }
 
@@ -414,7 +448,34 @@ function convertSdkEvent<TContext>(
     case "response.output_item.done": {
       const item = isRecord(rawData.item) ? rawData.item : null;
 
-      if (!item || item.type !== "message") {
+      if (!item) {
+        return [];
+      }
+
+      if (item.type === "image_generation_call") {
+        const imageId = stringValue(item.id);
+        const result = stringValue(item.result);
+
+        if (!state.generatedImageItem || !imageId || !result) {
+          return [];
+        }
+
+        const image = {
+          id: imageId,
+          url: await converter.base64ImageToUrl(imageId, result, null),
+        };
+        const doneItem = { ...state.generatedImageItem, image };
+        state.generatedImageItem = null;
+
+        return [
+          {
+            type: "thread.item.done",
+            item: doneItem,
+          },
+        ];
+      }
+
+      if (item.type !== "message") {
         return [];
       }
 
@@ -480,6 +541,7 @@ export async function* streamAgentResponse<TContext>(
     activeItemId: null,
     textByPart: new Map(),
     annotationCountByPart: new Map(),
+    generatedImageItem: null,
   };
   const toolCallMetadataByName = new Map<string, ToolCallMetadata>();
   let sdkDone = false;
@@ -556,7 +618,7 @@ export async function* streamAgentResponse<TContext>(
         toolCallMetadataByName.set(metadata.name, metadata.metadata);
       }
 
-      for (const event of convertSdkEvent(context, state, next.result.value, converter)) {
+      for (const event of await convertSdkEvent(context, state, next.result.value, converter)) {
         yield ThreadStreamEventSchema.parse(event);
       }
     }

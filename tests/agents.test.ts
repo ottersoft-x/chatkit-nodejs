@@ -1411,6 +1411,130 @@ describe("streamAgentResponse", () => {
     });
   });
 
+  test("maps image generation added and done events", async () => {
+    const events = await collect(
+      streamAgentResponse(
+        createContext(),
+        streamedRun([
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "image_generation_call", id: "img_call_1" },
+          }),
+          rawResponse({
+            type: "response.output_item.done",
+            item: { type: "image_generation_call", id: "img_call_1", result: "dGVzdA==" },
+          }),
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "message_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "generated_image",
+          image: null,
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "message_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "generated_image",
+          image: {
+            id: "img_call_1",
+            url: "data:image/png;base64,dGVzdA==",
+          },
+        },
+      },
+    ]);
+  });
+
+  test("uses custom converters for final image generation URLs", async () => {
+    class CustomConverter extends ResponseStreamConverter {
+      readonly calls: Array<[string, string, number | null]> = [];
+
+      override async base64ImageToUrl(
+        imageId: string,
+        base64Image: string,
+        partialImageIndex: number | null = null,
+      ): Promise<string> {
+        this.calls.push([imageId, base64Image, partialImageIndex]);
+        return `https://example.com/${imageId}.png`;
+      }
+    }
+
+    const converter = new CustomConverter();
+    const events = await collect(
+      streamAgentResponse(
+        createContext(),
+        streamedRun([
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "image_generation_call", id: "img_call_1" },
+          }),
+          rawResponse({
+            type: "response.output_item.done",
+            item: { type: "image_generation_call", id: "img_call_1", result: "dGVzdA==" },
+          }),
+        ]),
+        { converter },
+      ),
+    );
+
+    expect(converter.calls).toEqual([["img_call_1", "dGVzdA==", null]]);
+    expect(events.at(-1)).toEqual({
+      type: "thread.item.done",
+      item: {
+        id: "message_generated",
+        thread_id: "thr_1",
+        created_at: now,
+        type: "generated_image",
+        image: { id: "img_call_1", url: "https://example.com/img_call_1.png" },
+      },
+    });
+  });
+
+  test("ignores final image generation events without an active image item or result", async () => {
+    await expect(
+      collect(
+        streamAgentResponse(
+          createContext(),
+          streamedRun([
+            rawResponse({
+              type: "response.output_item.done",
+              item: { type: "image_generation_call", id: "img_call_1", result: "dGVzdA==" },
+            }),
+            rawResponse({
+              type: "response.output_item.added",
+              item: { type: "image_generation_call", id: "img_call_2" },
+            }),
+            rawResponse({
+              type: "response.output_item.done",
+              item: { type: "image_generation_call", id: "img_call_2" },
+            }),
+          ]),
+        ),
+      ),
+    ).resolves.toEqual([
+      {
+        type: "thread.item.added",
+        item: {
+          id: "message_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "generated_image",
+          image: null,
+        },
+      },
+    ]);
+  });
+
   test("ignores unknown SDK events in the first slice", async () => {
     const agentContext = createContext();
 
