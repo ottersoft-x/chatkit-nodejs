@@ -26,6 +26,7 @@ import {
   Select,
   serializeWidget,
   Spacer,
+  streamWidget,
   Text,
   Textarea,
   Title,
@@ -338,5 +339,86 @@ describe("widgets", () => {
         Card({ children: [Text({ id: "text", value: "world!", streaming: true })] }),
       ),
     ).toThrow("not a prefix");
+  });
+
+  const testThread = {
+    id: "thr_widget",
+    created_at: "2026-05-27T00:00:00.000Z",
+    status: { type: "active" as const },
+    metadata: {},
+  };
+
+  async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+    const values: T[] = [];
+    for await (const value of iterable) values.push(value);
+    return values;
+  }
+
+  test("streamWidget emits a done event for one-off widgets", async () => {
+    const events = await collect(
+      streamWidget(testThread, Card({ children: [Text({ value: "Done" })] }), {
+        copyText: "Done",
+        generateId: () => "msg_widget",
+        now: () => "2026-05-27T00:00:01.000Z",
+      }),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.done",
+        item: {
+          id: "msg_widget",
+          type: "widget",
+          thread_id: "thr_widget",
+          created_at: "2026-05-27T00:00:01.000Z",
+          widget: { type: "Card", children: [{ type: "Text", value: "Done" }] },
+          copy_text: "Done",
+        },
+      },
+    ]);
+  });
+
+  test("streamWidget diffs async widget generators", async () => {
+    async function* widgets() {
+      yield Card({ children: [Text({ id: "text", value: "Hello", streaming: true })] });
+      yield Card({ children: [Text({ id: "text", value: "Hello, world!", streaming: true })] });
+      yield Card({ children: [Text({ id: "text", value: "Hello, world!", streaming: false })] });
+    }
+
+    const events = await collect(
+      streamWidget(testThread, widgets(), {
+        generateId: () => "msg_stream",
+        now: () => "2026-05-27T00:00:02.000Z",
+      }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.item.added",
+      "thread.item.updated",
+      "thread.item.done",
+    ]);
+    expect(events[1]).toEqual({
+      type: "thread.item.updated",
+      item_id: "msg_stream",
+      update: {
+        type: "widget.streaming_text.value_delta",
+        component_id: "text",
+        delta: ", world!",
+        done: false,
+      },
+    });
+  });
+
+  test("streamWidget rejects empty async widget generators", async () => {
+    async function* widgets() {}
+
+    await expect(
+      collect(
+        streamWidget(testThread, widgets(), {
+          generateId: () => "msg_empty",
+          now: () => "2026-05-27T00:00:03.000Z",
+        }),
+      ),
+    ).rejects.toThrow("yield an initial widget");
   });
 });
