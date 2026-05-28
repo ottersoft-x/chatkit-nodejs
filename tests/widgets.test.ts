@@ -271,6 +271,40 @@ describe("widgets", () => {
     ]);
   });
 
+  test("diffWidget returns a root replacement for primitive array prop changes", () => {
+    expect(
+      diffWidget(
+        Card({ children: [Chart({ data: [1], xAxis: "x", yAxis: "y" })] }),
+        Card({ children: [Chart({ data: [2], xAxis: "x", yAxis: "y" })] }),
+      ),
+    ).toEqual([
+      {
+        type: "widget.root.updated",
+        widget: {
+          type: "Card",
+          children: [{ type: "Chart", data: [2], xAxis: "x", yAxis: "y" }],
+        },
+      },
+    ]);
+  });
+
+  test("diffWidget returns a root replacement for nested array prop changes", () => {
+    expect(
+      diffWidget(
+        Card({ children: [Chart({ data: [[{ value: 1 }]], xAxis: "x", yAxis: "y" })] }),
+        Card({ children: [Chart({ data: [[{ value: 2 }]], xAxis: "x", yAxis: "y" })] }),
+      ),
+    ).toEqual([
+      {
+        type: "widget.root.updated",
+        widget: {
+          type: "Card",
+          children: [{ type: "Chart", data: [[{ value: 2 }]], xAxis: "x", yAxis: "y" }],
+        },
+      },
+    ]);
+  });
+
   test("diffWidget rejects late streaming node ids", () => {
     expect(() =>
       diffWidget(

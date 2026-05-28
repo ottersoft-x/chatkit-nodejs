@@ -29,6 +29,10 @@ function jsonEqual(before: unknown, after: unknown): boolean {
   return JSON.stringify(before) === JSON.stringify(after);
 }
 
+function isObjectRecord(value: unknown): value is WidgetNode {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
 function canStreamValueChange(before: WidgetNode, after: WidgetNode): boolean {
   return (
     isStreamingText(before) &&
@@ -37,6 +41,22 @@ function canStreamValueChange(before: WidgetNode, after: WidgetNode): boolean {
     before.id === after.id &&
     String(after.value).startsWith(String(before.value))
   );
+}
+
+function valueRequiresFullReplace(before: unknown, after: unknown): boolean {
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length !== after.length) return true;
+    for (let index = 0; index < before.length; index += 1) {
+      if (valueRequiresFullReplace(before[index], after[index])) return true;
+    }
+    return false;
+  }
+
+  if (isObjectRecord(before) && isObjectRecord(after)) {
+    return requiresFullReplace(before, after);
+  }
+
+  return !jsonEqual(before, after);
 }
 
 function requiresFullReplace(before: WidgetNode, after: WidgetNode): boolean {
@@ -52,29 +72,7 @@ function requiresFullReplace(before: WidgetNode, after: WidgetNode): boolean {
     if (key === "value" && canStreamValueChange(before, after)) continue;
     if (key === "streaming" && isStreamingText(before) && isStreamingText(after)) continue;
 
-    if (Array.isArray(beforeValue) && Array.isArray(afterValue)) {
-      if (beforeValue.length !== afterValue.length) return true;
-      for (let index = 0; index < beforeValue.length; index += 1) {
-        if (requiresFullReplace(asNode(beforeValue[index]), asNode(afterValue[index]))) {
-          return true;
-        }
-      }
-      continue;
-    }
-
-    if (
-      beforeValue != null &&
-      afterValue != null &&
-      typeof beforeValue === "object" &&
-      typeof afterValue === "object" &&
-      !Array.isArray(beforeValue) &&
-      !Array.isArray(afterValue)
-    ) {
-      if (requiresFullReplace(asNode(beforeValue), asNode(afterValue))) return true;
-      continue;
-    }
-
-    if (!jsonEqual(beforeValue, afterValue)) return true;
+    if (valueRequiresFullReplace(beforeValue, afterValue)) return true;
   }
 
   return false;
