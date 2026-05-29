@@ -1,5 +1,7 @@
 export { ResponseStreamConverter, defaultResponseStreamConverter } from "./annotations";
 export type { ResponseStreamConverterOptions } from "./annotations";
+export { accumulateText } from "./accumulate";
+export type { AccumulatableTextWidget } from "./accumulate";
 export { ThreadItemConverter, simpleToAgentInput } from "./converter";
 export type {
   AgentMessageContentPart,

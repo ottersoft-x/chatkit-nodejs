@@ -57,12 +57,14 @@ export function ListViewItem(props: ListViewItemProps): DynamicWidgetComponent {
 }
 
 export type TextProps = WidgetProps & { value: string; streaming?: boolean };
-export function Text(props: TextProps): DynamicWidgetComponent {
+export type TextWidget = { type: "Text" } & TextProps;
+export function Text(props: TextProps): TextWidget {
   return component("Text", props);
 }
 
 export type MarkdownProps = WidgetProps & { value: string; streaming?: boolean };
-export function Markdown(props: MarkdownProps): DynamicWidgetComponent {
+export type MarkdownWidget = { type: "Markdown" } & MarkdownProps;
+export function Markdown(props: MarkdownProps): MarkdownWidget {
   return component("Markdown", props);
 }
 
