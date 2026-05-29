@@ -13,6 +13,7 @@ describe("package metadata", () => {
       test: "bun test",
       typecheck: "bunx tsc --noEmit",
       verify: "bun run typecheck && bun test",
+      "verify:parity": "bun run verify && bun scripts/verify-parity.ts",
     });
   });
 
