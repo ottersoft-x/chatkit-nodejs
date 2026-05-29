@@ -532,31 +532,7 @@ async function convertSdkEvent<TContext>(
       ];
     }
 
-    case "response.output_text.delta": {
-      const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
-
-      if (!itemId) {
-        return [];
-      }
-
-      const contentIndex = numberValue(rawData.content_index) ?? 0;
-      const delta = stringValue(rawData.delta) ?? "";
-      const key = partKey(itemId, contentIndex);
-      state.textByPart.set(key, `${state.textByPart.get(key) ?? ""}${delta}`);
-
-      return [
-        {
-          type: "thread.item.updated",
-          item_id: itemId,
-          update: {
-            type: "assistant_message.content_part.text_delta",
-            content_index: contentIndex,
-            delta,
-          },
-        },
-      ];
-    }
-
+    case "response.output_text.delta":
     case "response.refusal.delta": {
       const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
 
