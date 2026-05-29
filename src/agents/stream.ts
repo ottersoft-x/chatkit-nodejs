@@ -503,6 +503,35 @@ async function convertSdkEvent<TContext>(
       return assistantMessageAddedEvents(context, state, itemId);
     }
 
+    case "response.content_part.added": {
+      const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
+      if (!itemId) {
+        return [];
+      }
+
+      const part = rawData.part;
+      if (isRecord(part) && part.type === "reasoning_text") {
+        return [];
+      }
+
+      const content = convertTextContentPart(part, converter);
+      if (!content) {
+        return [];
+      }
+
+      return [
+        {
+          type: "thread.item.updated",
+          item_id: itemId,
+          update: {
+            type: "assistant_message.content_part.added",
+            content_index: numberValue(rawData.content_index) ?? 0,
+            content,
+          },
+        },
+      ];
+    }
+
     case "response.output_text.delta": {
       const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
 
@@ -523,6 +552,54 @@ async function convertSdkEvent<TContext>(
             type: "assistant_message.content_part.text_delta",
             content_index: contentIndex,
             delta,
+          },
+        },
+      ];
+    }
+
+    case "response.refusal.delta": {
+      const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
+
+      if (!itemId) {
+        return [];
+      }
+
+      const contentIndex = numberValue(rawData.content_index) ?? 0;
+      const delta = stringValue(rawData.delta) ?? "";
+      const key = partKey(itemId, contentIndex);
+      state.textByPart.set(key, `${state.textByPart.get(key) ?? ""}${delta}`);
+
+      return [
+        {
+          type: "thread.item.updated",
+          item_id: itemId,
+          update: {
+            type: "assistant_message.content_part.text_delta",
+            content_index: contentIndex,
+            delta,
+          },
+        },
+      ];
+    }
+
+    case "response.refusal.done": {
+      const itemId = stringValue(rawData.item_id) ?? state.activeItemId;
+
+      if (!itemId) {
+        return [];
+      }
+
+      const contentIndex = numberValue(rawData.content_index) ?? 0;
+      const text = stringValue(rawData.refusal) ?? state.textByPart.get(partKey(itemId, contentIndex)) ?? "";
+
+      return [
+        {
+          type: "thread.item.updated",
+          item_id: itemId,
+          update: {
+            type: "assistant_message.content_part.done",
+            content_index: contentIndex,
+            content: { type: "output_text", text, annotations: [] },
           },
         },
       ];
