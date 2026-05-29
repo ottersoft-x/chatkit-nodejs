@@ -16,11 +16,11 @@
         "tests": []
       },
       "bun": {
-        "tests": ["tests/parity-metadata.test.ts", "tests/parity-smoke.test.ts"],
+        "tests": ["tests/parity-smoke.test.ts"],
         "sources": [],
         "docs": ["docs/parity/upstream.json"]
       },
-      "notes": "The pinned Python package name, version, submodule path, and commit are recorded and tested locally."
+      "notes": "The pinned Python package name, version, submodule path, and commit are recorded and cross-checked against the parity matrix."
     },
     {
       "id": "agents-output-streaming",

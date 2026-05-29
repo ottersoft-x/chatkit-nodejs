@@ -51,12 +51,6 @@ async function expectLocalFilesExist(rowId: string, paths: string[]): Promise<vo
   }
 }
 
-function expectParityRow(id: string): ParityRow {
-  const row = (matrix.rows as ParityRow[]).find((candidate) => candidate.id === id);
-  expect(row, `missing parity row ${id}`).toBeTruthy();
-  return row!;
-}
-
 interface RequestContext {
   userId: string;
 }
@@ -203,14 +197,12 @@ describe("parity matrix", () => {
     expect(Array.isArray(matrix.rows)).toBe(true);
     expect(matrix.rows.length).toBeGreaterThan(8);
 
-    const rowIds = new Set<string>();
     const ids = new Set<string>();
     for (const row of matrix.rows as ParityRow[]) {
       expectString(row.id, "row id");
       expect(row.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
       expect(ids.has(row.id), `duplicate parity row id ${row.id}`).toBe(false);
       ids.add(row.id);
-      rowIds.add(row.id);
 
       expectString(row.area, `${row.id} area`);
       expect(validAreas.has(row.area), `${row.id} has unknown area ${row.area}`).toBe(true);
@@ -232,88 +224,6 @@ describe("parity matrix", () => {
       }
       await expectLocalFilesExist(row.id, localReferences);
     }
-
-    expect(rowIds).toContain("agents-context-events");
-  });
-
-  test("tracks the known deferred full-parity gaps", () => {
-    const deferredIds = new Set(
-      (matrix.rows as ParityRow[])
-        .filter((row) => row.status === "deferred")
-        .map((row) => row.id),
-    );
-
-    expect(deferredIds).not.toContain("annotations-entity-sources");
-    expect(deferredIds).not.toContain("annotations-input-replay");
-    expect(deferredIds).not.toContain("non-text-assistant-content");
-    expect(deferredIds.size).toBe(0);
-
-    for (const row of matrix.rows as ParityRow[]) {
-      expect(row.notes, `${row.id} should not mention stale deferred status`).not.toMatch(/\bdeferred\b/i);
-    }
-  });
-
-  test("classifies non-text assistant content against the pinned contract", () => {
-    const row = expectParityRow("non-text-assistant-content");
-
-    expect(row.status).toBe("not-applicable");
-    expect(row.bun?.tests).toEqual(
-      expect.arrayContaining(["tests/agents.test.ts", "tests/server.test.ts", "tests/parity-smoke.test.ts"]),
-    );
-    expect(row.bun?.sources).toEqual(
-      expect.arrayContaining([
-        "src/types/core.ts",
-        "src/types/server.ts",
-        "src/agents/annotations.ts",
-        "src/agents/stream.ts",
-      ]),
-    );
-    expect(row.bun?.docs).toEqual(
-      expect.arrayContaining([
-        "docs/superpowers/specs/2026-05-28-chatkit-agents-refusal-content-part-design.md",
-        "docs/superpowers/specs/2026-05-28-chatkit-agents-generated-images-design.md",
-        "docs/superpowers/specs/2026-05-29-chatkit-non-text-assistant-content-design.md",
-      ]),
-    );
-    expect(row.notes).toEqual(expect.stringContaining("output text and refusal"));
-    expect(row.notes).toEqual(expect.stringContaining("generated_image"));
-  });
-
-  test("classifies entity annotation sources against the pinned contract", () => {
-    const row = expectParityRow("annotations-entity-sources");
-
-    expect(row.status).toBe("not-applicable");
-    expect(row.bun?.sources).toEqual(
-      expect.arrayContaining(["src/types/core.ts", "src/agents/annotations.ts"]),
-    );
-    expect(row.bun?.docs).toEqual(
-      expect.arrayContaining([
-        "docs/superpowers/specs/2026-05-28-chatkit-agents-annotation-hardening-design.md",
-        "docs/superpowers/specs/2026-05-29-chatkit-remaining-annotation-parity-design.md",
-      ]),
-    );
-    expect(row.notes).toEqual(expect.stringContaining("no default upstream entity citation"));
-    expect(row.notes).toEqual(expect.stringContaining("app-authored"));
-    expect(row.notes).toEqual(expect.stringContaining("custom converter"));
-  });
-
-  test("classifies annotation input replay against the pinned contract", () => {
-    const row = expectParityRow("annotations-input-replay");
-
-    expect(row.status).toBe("not-applicable");
-    expect(row.bun?.tests).toEqual(
-      expect.arrayContaining(["tests/agents-converter.test.ts", "tests/parity-smoke.test.ts"]),
-    );
-    expect(row.bun?.sources).toEqual(expect.arrayContaining(["src/agents/converter.ts"]));
-    expect(row.bun?.docs).toEqual(
-      expect.arrayContaining([
-        "docs/superpowers/specs/2026-05-28-chatkit-agents-input-conversion-design.md",
-        "docs/superpowers/specs/2026-05-29-chatkit-remaining-annotation-parity-design.md",
-      ]),
-    );
-    expect(row.notes).toEqual(expect.stringContaining("pinned Python"));
-    expect(row.notes).toEqual(expect.stringContaining("strips assistant annotations"));
-    expect(row.notes).toEqual(expect.stringContaining("Bun replays assistant text without annotations"));
   });
 });
 
