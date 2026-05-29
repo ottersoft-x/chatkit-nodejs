@@ -205,17 +205,17 @@
     {
       "id": "agents-accumulate-text",
       "area": "agents-output",
-      "status": "deferred",
+      "status": "covered",
       "upstream": {
         "files": ["packages/chatkit-python/tests/test_agents.py"],
         "tests": ["test_accumulate_text"]
       },
       "bun": {
-        "tests": [],
-        "sources": [],
-        "docs": ["docs/superpowers/specs/2026-05-28-chatkit-parity-foundation-design.md"]
+        "tests": ["tests/agents-accumulate.test.ts"],
+        "sources": ["src/agents/accumulate.ts"],
+        "docs": ["docs/superpowers/specs/2026-05-28-chatkit-agents-accumulate-text-design.md"]
       },
-      "notes": "Python exposes text accumulation helpers; Bun does not export an equivalent yet."
+      "notes": "Bun exports accumulateText for strict raw response output text delta parity and covers composition with widget streaming roots."
     },
     {
       "id": "agents-previous-response-id",
