@@ -27,8 +27,8 @@ describe("package metadata", () => {
       throw new Error('Expected package.json exports["."] to contain an object');
     }
 
-    expect(packageJson.types).toBe("./dist/index.d.ts");
-    expect(rootExport.types).toBe("./dist/index.d.ts");
+    expect(packageJson.types).toBe("./types/index.d.ts");
+    expect(rootExport.types).toBe("./types/index.d.ts");
     expect(packageJson.module).toBe("./src/index.ts");
     expect(rootExport.import).toBe("./src/index.ts");
   });

@@ -2,12 +2,12 @@
   "name": "chatkit-bun",
   "version": "0.0.2",
   "module": "./src/index.ts",
-  "types": "./dist/index.d.ts",
+  "types": "./types/index.d.ts",
   "type": "module",
   "private": true,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": "./types/index.d.ts",
       "import": "./src/index.ts"
     }
   },
