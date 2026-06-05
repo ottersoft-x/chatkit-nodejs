@@ -1,6 +1,12 @@
 {
   "plugins": {
     "superpowers": {
+      "enabled": false
+    },
+    "cursor-team-kit": {
+      "enabled": true
+    },
+    "pstack": {
       "enabled": true
     }
   }
