@@ -43,7 +43,7 @@ const threadResponse: Thread = {
   id: "thr_test",
   created_at: "2026-06-20T00:00:00.000Z",
   status: { type: "active" },
-  metadata: {},
+  metadata: { topic: "support" },
   items: { data: [userMessage], has_more: false, after: null },
 };
 
@@ -115,6 +115,7 @@ test("sanitizeThreadStreamEvent strips metadata from thread response events", ()
     throw new Error("Expected sanitized thread response");
   }
 
+  assert.deepEqual(sanitized.thread.metadata, { topic: "support" });
   assert.equal("metadata" in item.attachments[0]!, false);
   const originalItem = threadResponse.items.data[0];
   if (!originalItem || originalItem.type !== "user_message") {
@@ -156,4 +157,42 @@ test("sanitizeClientPayload handles pages without after cursor", () => {
   });
 
   assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
+});
+
+test("sanitizeClientPayload leaves invalid typed records unchanged", () => {
+  assert.deepEqual(sanitizeClientPayload({ type: "user_message", metadata: { keep: true } }), {
+    type: "user_message",
+    metadata: { keep: true },
+  });
+  assert.deepEqual(sanitizeClientPayload({ type: "thread.created", metadata: { keep: true } }), {
+    type: "thread.created",
+    metadata: { keep: true },
+  });
+});
+
+test("sanitizeClientPayload does not strip unrelated attachment-shaped records", () => {
+  const value = { id: "not_attachment", mime_type: "text/plain", metadata: { keep: true } };
+
+  assert.deepEqual(sanitizeClientPayload(value), value);
+});
+
+test("sanitizeClientPayload leaves invalid page-like payloads unchanged", () => {
+  const value = {
+    data: [{ type: "user_message", metadata: { keep: true } }],
+    has_more: false,
+  };
+
+  assert.deepEqual(sanitizeClientPayload(value), value);
+});
+
+test("sanitizeClientPayload follows JSON serialization semantics for unknown payloads", () => {
+  const sanitized = sanitizeClientPayload({
+    metadata: { keep: true },
+    omitted: undefined,
+    callback() {
+      return "ignored";
+    },
+  });
+
+  assert.deepEqual(sanitized, { metadata: { keep: true } });
 });
