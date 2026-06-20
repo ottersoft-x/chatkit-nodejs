@@ -38,12 +38,13 @@ export type ClientThreadItem<TItem extends ThreadItem = ThreadItem> =
     ? Omit<TItem, "attachments"> & { attachments: ClientAttachment<TItem["attachments"][number]>[] }
     : TItem;
 
-export type ClientPage<TItem, TClientItem = TItem> = Omit<Page<TItem>, "data"> & {
-  data: TClientItem[];
-};
+export type ClientPage<TPageOrItem, TClientItem = TPageOrItem> =
+  TPageOrItem extends Page<unknown>
+    ? Omit<TPageOrItem, "data"> & { data: TClientItem[] }
+    : Omit<Page<TPageOrItem>, "data"> & { data: TClientItem[] };
 
 export type ClientThread<TThread extends Thread = Thread> = Omit<TThread, "items"> & {
-  items: ClientPage<ThreadItem, ClientThreadItem>;
+  items: ClientPage<TThread["items"], ClientThreadItem>;
 };
 
 export type ClientThreadStreamEvent<TEvent extends ThreadStreamEvent = ThreadStreamEvent> =
@@ -66,9 +67,9 @@ export type ClientPayload<T> =
             ? [TItem] extends [never]
               ? T
               : T extends ThreadItemPagePayloadInput
-                ? ClientPage<ThreadItem, ClientThreadItem>
+                ? ClientPage<T, ClientThreadItem>
                 : T extends ThreadPagePayloadInput
-                  ? ClientPage<Thread, ClientThread>
+                  ? ClientPage<T, ClientThread>
                   : T
             : T;
 
@@ -118,6 +119,18 @@ function mergeParsedThread(original: unknown, parsed: Thread): Thread {
   };
 }
 
+function mergeParsedThreadPage(original: unknown, parsed: Page<Thread>): Page<Thread> {
+  const mergedPage = mergeParsedPage(original, parsed);
+  if (!isPageRecord(original)) {
+    return mergedPage;
+  }
+
+  return {
+    ...mergedPage,
+    data: parsed.data.map((thread, index) => mergeParsedThread(original.data[index], thread)),
+  };
+}
+
 function mergeParsedThreadStreamEvent(
   original: unknown,
   parsed: ThreadStreamEvent,
@@ -160,17 +173,17 @@ export function sanitizeThreadResponse<TThread extends Thread>(thread: TThread):
   return {
     ...clone,
     items: sanitizePage(thread.items, sanitizeThreadItem),
-  } as ClientThread<TThread>;
+  } as unknown as ClientThread<TThread>;
 }
 
-export function sanitizePage<TItem, TClientItem>(
-  page: Page<TItem>,
-  sanitizeData: (value: TItem) => TClientItem,
-): ClientPage<TItem, TClientItem> {
+export function sanitizePage<TPage extends Page<unknown>, TClientItem>(
+  page: TPage,
+  sanitizeData: (value: TPage["data"][number]) => TClientItem,
+): ClientPage<TPage, TClientItem> {
   return {
-    ...jsonClone(page as Page<TItem> & Record<string, unknown>),
+    ...jsonClone(page as TPage & Record<string, unknown>),
     data: page.data.map((item) => sanitizeData(item)),
-  };
+  } as unknown as ClientPage<TPage, TClientItem>;
 }
 
 export function sanitizeThreadStreamEvent<TEvent extends ThreadStreamEvent>(
@@ -204,7 +217,7 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
 
   const threadPage = isPageRecord(value) ? ThreadPageSchema.safeParse(value) : null;
   if (threadPage?.success) {
-    return sanitizePage(mergeParsedPage(value, threadPage.data), sanitizeThreadResponse) as ClientPayload<T>;
+    return sanitizePage(mergeParsedThreadPage(value, threadPage.data), sanitizeThreadResponse) as ClientPayload<T>;
   }
 
   const threadItem = ThreadItemSchema.safeParse(value);

@@ -8,6 +8,7 @@ import {
 } from "../src/response-sanitizer.js";
 import type {
   ClientPage,
+  ClientThread,
   ClientThreadItem,
   ClientThreadStreamEvent,
   ThreadItemPagePayloadInput,
@@ -290,6 +291,39 @@ test("sanitizeClientPayload preserves nested event thread item page fields", () 
   assert.deepEqual((sanitized.thread.items as typeof sanitized.thread.items & { metadata?: unknown }).metadata, {
     keep: true,
   });
+});
+
+test("sanitizeClientPayload preserves nested thread item page fields inside thread pages", () => {
+  const value = {
+    data: [
+      {
+        ...threadResponse,
+        items: {
+          ...threadResponse.items,
+          metadata: { keep: true },
+        },
+      },
+    ],
+    has_more: false,
+    metadata: { outer: true },
+  };
+  const sanitized = sanitizeClientPayload(value);
+
+  expectType<ClientPage<typeof value, ClientThread>>(sanitized);
+  assert.deepEqual(sanitized.metadata, { outer: true });
+  const thread = sanitized.data[0];
+  if (!thread) {
+    throw new Error("Expected thread");
+  }
+  const item = thread.items.data[0];
+
+  assert.deepEqual((thread.items as typeof thread.items & { metadata?: unknown }).metadata, {
+    keep: true,
+  });
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
 });
 
 test("sanitizeClientPayload preserves attachment metadata on unsupported page types", () => {
