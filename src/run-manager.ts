@@ -142,6 +142,10 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
       return { events: this.closedIterable() };
     }
 
+    if (this.runs.get(options.runId) !== record || record.status !== "running") {
+      return { events: this.closedIterable() };
+    }
+
     const queue = new AsyncEventQueue<TEvent>();
     record.subscribers.add(queue);
 

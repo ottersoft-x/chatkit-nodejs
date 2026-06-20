@@ -82,6 +82,58 @@ test("new subscribers can attach by run id and receive later events", async () =
   assert.deepEqual(await collect(second.events), ["second"]);
 });
 
+test("subscribe closes when run finishes during async scope validation", async () => {
+  let releaseRun!: () => void;
+  const runReleased = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+  let releaseScope!: () => void;
+  const scopeReleased = new Promise<void>((resolve) => {
+    releaseScope = resolve;
+  });
+  let markSubscribeScopeStarted!: () => void;
+  const subscribeScopeStarted = new Promise<void>((resolve) => {
+    markSubscribeScopeStarted = resolve;
+  });
+  let scopeCalls = 0;
+  const manager = new ResponseRunManager<{ userId: string }, string>({
+    getRunScope: async (context) => {
+      scopeCalls++;
+      if (scopeCalls === 1) {
+        return context.userId;
+      }
+
+      markSubscribeScopeStarted();
+      await scopeReleased;
+      return context.userId;
+    },
+  });
+  const run = await manager.startRun({
+    context: { userId: "user_1" },
+    source: async function* () {
+      await runReleased;
+    },
+  });
+
+  const subscriptionPromise = manager.subscribe({
+    runId: run.runId,
+    context: { userId: "user_1" },
+  });
+  await subscribeScopeStarted;
+  releaseRun();
+  await run.completed;
+  releaseScope();
+
+  const subscription = await subscriptionPromise;
+  const iterator = subscription.events[Symbol.asyncIterator]();
+  const next = await Promise.race([
+    iterator.next(),
+    new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+  ]);
+
+  assert.deepEqual(next, { done: true, value: undefined });
+});
+
 test("simultaneous runs require their own run ids", async () => {
   let releaseFirst!: () => void;
   let releaseSecond!: () => void;
