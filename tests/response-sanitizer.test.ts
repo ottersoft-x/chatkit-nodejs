@@ -322,6 +322,23 @@ test("sanitizeClientPayload preserves nested thread item page fields", () => {
   assert.equal("metadata" in item.attachments[0]!, false);
 });
 
+test("sanitizeClientPayload preserves defaulted nested thread item page fields", () => {
+  const value = {
+    ...threadResponse,
+    items: {
+      metadata: { keep: true },
+    },
+  };
+  const sanitized = sanitizeClientPayload(value);
+  const items = sanitized.items as { data: unknown[]; has_more: boolean; metadata?: unknown };
+
+  assert.deepEqual(items.metadata, {
+    keep: true,
+  });
+  assert.deepEqual(items.data, []);
+  assert.equal(items.has_more, false);
+});
+
 test("sanitizeClientPayload preserves nested event thread item page fields", () => {
   const value = {
     type: "thread.created",
@@ -342,6 +359,30 @@ test("sanitizeClientPayload preserves nested event thread item page fields", () 
   assert.deepEqual((sanitized.thread.items as typeof sanitized.thread.items & { metadata?: unknown }).metadata, {
     keep: true,
   });
+});
+
+test("sanitizeClientPayload preserves defaulted nested event thread item page fields", () => {
+  const value = {
+    type: "thread.created",
+    thread: {
+      ...threadResponse,
+      items: {
+        metadata: { keep: true },
+      },
+    },
+  };
+  const sanitized = sanitizeClientPayload(value);
+
+  assert.equal(sanitized.type, "thread.created");
+  if (sanitized.type !== "thread.created") {
+    throw new Error("Expected thread.created event");
+  }
+  const items = sanitized.thread.items as { data: unknown[]; has_more: boolean; metadata?: unknown };
+  assert.deepEqual(items.metadata, {
+    keep: true,
+  });
+  assert.deepEqual(items.data, []);
+  assert.equal(items.has_more, false);
 });
 
 test("sanitizeClientPayload preserves nested thread item page fields inside thread pages", () => {
@@ -377,6 +418,54 @@ test("sanitizeClientPayload preserves nested thread item page fields inside thre
   assert.equal("metadata" in item.attachments[0]!, false);
 });
 
+test("sanitizeClientPayload preserves defaulted nested thread item page fields inside thread pages", () => {
+  const value = {
+    data: [
+      {
+        ...threadResponse,
+        items: {
+          metadata: { keep: true },
+        },
+      },
+    ],
+    has_more: false,
+    metadata: { outer: true },
+  };
+  const sanitized = sanitizeClientPayload(value);
+  const page = sanitized as unknown as {
+    data: Array<{ items: { data: unknown[]; has_more: boolean; metadata?: unknown } }>;
+    metadata?: unknown;
+  };
+
+  assert.deepEqual(page.metadata, { outer: true });
+  const thread = page.data[0];
+  if (!thread) {
+    throw new Error("Expected thread");
+  }
+  assert.deepEqual((thread.items as typeof thread.items & { metadata?: unknown }).metadata, {
+    keep: true,
+  });
+  assert.deepEqual(thread.items.data, []);
+  assert.equal(thread.items.has_more, false);
+});
+
+test("sanitizeClientPayload treats page-shaped payloads as pages before sync custom action responses", () => {
+  const input = {
+    data: [userMessage],
+    has_more: false,
+    updated_item: "page-field",
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientPage<typeof input, ClientThreadItem>>(sanitized);
+  assert.equal(sanitized.updated_item, "page-field");
+  const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
 test("sanitizeClientPayload preserves attachment metadata on unsupported page types", () => {
   const value = {
     data: [attachment],
@@ -391,8 +480,27 @@ test("sanitizeClientPayload preserves page-level fields on empty pages", () => {
     data: [],
     metadata: { keep: true },
   };
+  const sanitized = sanitizeClientPayload(value);
 
-  assert.deepEqual(sanitizeClientPayload(value), value);
+  expectType<ClientPage<typeof value, ClientThreadItem>>(sanitized);
+  assert.deepEqual(sanitized, {
+    data: [],
+    has_more: false,
+    metadata: { keep: true },
+  });
+});
+
+test("sanitizeClientPayload canonicalizes typed empty item pages", () => {
+  const input: ThreadItemPagePayloadInput = {
+    data: [],
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientPage<ThreadItemPagePayloadInput, ClientThreadItem>>(sanitized);
+  assert.deepEqual(sanitized, {
+    data: [],
+    has_more: false,
+  });
 });
 
 test("sanitizeClientPayload leaves invalid typed records unchanged", () => {

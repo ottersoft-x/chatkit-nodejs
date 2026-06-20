@@ -41,6 +41,16 @@ type PagePayloadLike = {
   data: readonly unknown[];
   has_more?: boolean | undefined;
 };
+type PageRecord = {
+  data: unknown[];
+  has_more?: boolean | undefined;
+  after?: string | null | undefined;
+} & Record<string, unknown>;
+type DefaultablePageRecord = {
+  data?: unknown[] | undefined;
+  has_more?: boolean | undefined;
+  after?: string | null | undefined;
+} & Record<string, unknown>;
 
 export type ClientAttachment<TAttachment extends Attachment = Attachment> =
   TAttachment extends Attachment ? Omit<TAttachment, "metadata"> : never;
@@ -73,25 +83,23 @@ export type ClientSyncCustomActionResponse = {
 export type ClientPayload<T> =
   T extends AttachmentPayloadInput
     ? ClientAttachment
-    : T extends ThreadItemPayloadInput
-      ? ClientThreadItem
-      : T extends ThreadPayloadInput
-        ? ClientThread
-        : T extends ThreadStreamEventPayloadInput
-          ? ClientThreadStreamEvent
-          : T extends { updated_item?: infer TUpdatedItem }
-            ? [TUpdatedItem] extends [ThreadItemPayloadInput | null | undefined]
-              ? ClientSyncCustomActionResponse
-              : T
-            : T extends { data: readonly (infer TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
-              ? [TItem] extends [never]
-                ? T
-                : T extends ThreadItemPagePayloadInput
-                  ? ClientPage<T, ClientThreadItem>
-                  : T extends ThreadPagePayloadInput
-                    ? ClientPage<T, ClientThread>
-                    : T
-              : T;
+    : T extends { data: readonly (infer _TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
+      ? T extends ThreadItemPagePayloadInput
+        ? ClientPage<T, ClientThreadItem>
+        : T extends ThreadPagePayloadInput
+          ? ClientPage<T, ClientThread>
+          : T
+      : T extends ThreadItemPayloadInput
+        ? ClientThreadItem
+        : T extends ThreadPayloadInput
+          ? ClientThread
+          : T extends ThreadStreamEventPayloadInput
+            ? ClientThreadStreamEvent
+            : T extends { updated_item?: infer TUpdatedItem }
+              ? [TUpdatedItem] extends [ThreadItemPayloadInput | null | undefined]
+                ? ClientSyncCustomActionResponse
+                : T
+            : T;
 
 function jsonClone<T>(value: T): T {
   const json = JSON.stringify(omitUndefinedDeep(value));
@@ -105,12 +113,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPageRecord(
-  value: unknown,
-): value is { data: unknown[]; has_more?: boolean | undefined; after?: string | null | undefined } & Record<
-  string,
-  unknown
-> {
+function isPageRecord(value: unknown): value is PageRecord {
   return (
     isRecord(value) &&
     Array.isArray(value.data) &&
@@ -122,19 +125,31 @@ function isPageRecord(
   );
 }
 
+function isDefaultablePageRecord(value: unknown): value is DefaultablePageRecord {
+  return (
+    isRecord(value) &&
+    (!("data" in value) || Array.isArray(value.data)) &&
+    (!("has_more" in value) || typeof value.has_more === "boolean" || value.has_more === undefined) &&
+    (!("after" in value) ||
+      typeof value.after === "string" ||
+      value.after === null ||
+      value.after === undefined)
+  );
+}
+
 function mergeParsedPage<TItem>(original: unknown, parsed: Page<TItem>): Page<TItem> {
-  if (!isPageRecord(original)) {
+  if (!isDefaultablePageRecord(original)) {
     return parsed;
   }
 
   return {
-    ...jsonClone(original as Page<unknown> & Record<string, unknown>),
+    ...jsonClone(original),
     ...parsed,
   };
 }
 
 function mergeParsedThread(original: unknown, parsed: Thread): Thread {
-  if (!isRecord(original) || !isPageRecord(original.items)) {
+  if (!isRecord(original) || !isDefaultablePageRecord(original.items)) {
     return parsed;
   }
 
@@ -249,7 +264,7 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
     return sanitizeAttachment(attachment.data) as ClientPayload<T>;
   }
 
-  if (isPageRecord(value) && value.data.length > 0) {
+  if (isPageRecord(value)) {
     const threadItemPage = ThreadItemPageSchema.safeParse(value);
     if (threadItemPage.success) {
       return sanitizePage(mergeParsedPage(value, threadItemPage.data), sanitizeThreadItem) as ClientPayload<T>;
