@@ -389,7 +389,6 @@ test("sanitizeClientPayload preserves attachment metadata on unsupported page ty
 test("sanitizeClientPayload preserves page-level fields on empty pages", () => {
   const value = {
     data: [],
-    has_more: false,
     metadata: { keep: true },
   };
 

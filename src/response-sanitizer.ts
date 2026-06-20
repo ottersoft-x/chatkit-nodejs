@@ -249,14 +249,16 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
     return sanitizeAttachment(attachment.data) as ClientPayload<T>;
   }
 
-  const threadItemPage = isPageRecord(value) ? ThreadItemPageSchema.safeParse(value) : null;
-  if (threadItemPage?.success) {
-    return sanitizePage(mergeParsedPage(value, threadItemPage.data), sanitizeThreadItem) as ClientPayload<T>;
-  }
+  if (isPageRecord(value) && value.data.length > 0) {
+    const threadItemPage = ThreadItemPageSchema.safeParse(value);
+    if (threadItemPage.success) {
+      return sanitizePage(mergeParsedPage(value, threadItemPage.data), sanitizeThreadItem) as ClientPayload<T>;
+    }
 
-  const threadPage = isPageRecord(value) ? ThreadPageSchema.safeParse(value) : null;
-  if (threadPage?.success) {
-    return sanitizePage(mergeParsedThreadPage(value, threadPage.data), sanitizeThreadResponse) as ClientPayload<T>;
+    const threadPage = ThreadPageSchema.safeParse(value);
+    if (threadPage.success) {
+      return sanitizePage(mergeParsedThreadPage(value, threadPage.data), sanitizeThreadResponse) as ClientPayload<T>;
+    }
   }
 
   const threadItem = ThreadItemSchema.safeParse(value);
