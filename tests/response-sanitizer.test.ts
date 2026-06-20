@@ -423,13 +423,15 @@ test("sanitizeClientPayload leaves invalid page-like payloads unchanged", () => 
 });
 
 test("sanitizeClientPayload follows JSON serialization semantics for unknown payloads", () => {
-  const sanitized = sanitizeClientPayload({
+  const input = {
     metadata: { keep: true },
     omitted: undefined,
     callback() {
       return "ignored";
     },
-  });
+  };
+  const sanitized = sanitizeClientPayload(input);
 
+  expectType<typeof input>(sanitized);
   assert.deepEqual(sanitized, { metadata: { keep: true } });
 });

@@ -79,7 +79,7 @@ export type ClientPayload<T> =
         ? ClientThread
         : T extends ThreadStreamEventPayloadInput
           ? ClientThreadStreamEvent
-          : T extends SyncCustomActionResponsePayloadInput
+          : "updated_item" extends keyof T
             ? ClientSyncCustomActionResponse
             : T extends { data: readonly (infer TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
               ? [TItem] extends [never]
