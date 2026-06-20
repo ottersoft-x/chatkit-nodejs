@@ -26,9 +26,7 @@ export type AttachmentPayloadInput = z.input<typeof AttachmentSchema>;
 export type ThreadItemPayloadInput = z.input<typeof ThreadItemSchema>;
 export type ThreadPayloadInput = z.input<typeof ThreadSchema>;
 export type ThreadStreamEventPayloadInput = z.input<typeof ThreadStreamEventSchema>;
-export type SyncCustomActionResponsePayloadInput = {
-  updated_item: ThreadItemPayloadInput | null | undefined;
-};
+export type SyncCustomActionResponsePayloadInput = z.input<typeof SyncCustomActionResponseSchema>;
 export type ThreadItemPagePayloadInput = {
   data: ThreadItemPayloadInput[];
   has_more?: boolean | undefined;

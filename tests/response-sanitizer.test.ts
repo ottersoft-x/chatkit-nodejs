@@ -18,6 +18,7 @@ import type {
   ThreadStreamEventPayloadInput,
 } from "../src/response-sanitizer.js";
 import type { Attachment, Thread, ThreadItem, ThreadStreamEvent } from "../src/index.js";
+import type { SyncCustomActionResponse } from "../src/types/server.js";
 
 function expectType<T>(_value: T): void {}
 
@@ -280,6 +281,20 @@ test("sanitizeClientPayload strips metadata from sync custom action response ite
   expectType<ClientSyncCustomActionResponse>(sanitized);
   // @ts-expect-error Sync custom action response output is canonical and does not promise extra fields.
   sanitized.custom;
+  const item = sanitized.updated_item;
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
+test("sanitizeClientPayload returns canonical sync custom action response for public type", () => {
+  const input: SyncCustomActionResponse = {
+    updated_item: userMessage,
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientSyncCustomActionResponse>(sanitized);
   const item = sanitized.updated_item;
   if (!item || item.type !== "user_message") {
     throw new Error("Expected user message");
