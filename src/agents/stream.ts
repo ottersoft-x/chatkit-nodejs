@@ -8,6 +8,7 @@ import {
   nextWithAbort,
   StreamCancelledError,
   returnIterator as returnIteratorWithAbort,
+  throwIfAborted,
 } from "../stream-runtime.js";
 import type { AssistantMessageContent, ThreadItem } from "../types/core.js";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server.js";
@@ -976,6 +977,8 @@ export async function* streamAgentResponse<TContext>(
         throw sdkNext.error;
       }
 
+      throwIfAborted(signal);
+
       if (!contextDone && contextNext.result) {
         if (contextNext.result.result.done) {
           contextDone = true;
@@ -983,6 +986,7 @@ export async function* streamAgentResponse<TContext>(
           const value = contextNext.result.result.value;
           contextNext = tagNext("context", contextIterator.next());
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+            throwIfAborted(signal);
             yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
           }
         }
@@ -1004,9 +1008,11 @@ export async function* streamAgentResponse<TContext>(
       }
 
       const next = await Promise.race(contenders);
+      throwIfAborted(signal);
 
       if (next.source === "sdk" && !contextDone) {
         await Promise.resolve();
+        throwIfAborted(signal);
 
         if (contextNext.result) {
           if (contextNext.result.result.done) {
@@ -1015,6 +1021,7 @@ export async function* streamAgentResponse<TContext>(
             const value = contextNext.result.result.value;
             contextNext = tagNext("context", contextIterator.next());
             for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+              throwIfAborted(signal);
               yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
             }
             continue;
@@ -1030,6 +1037,7 @@ export async function* streamAgentResponse<TContext>(
           const value = next.result.value as ThreadStreamEvent;
 
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+            throwIfAborted(signal);
             yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
           }
         }
@@ -1050,14 +1058,18 @@ export async function* streamAgentResponse<TContext>(
       }
 
       for (const event of await convertSdkEvent(context, state, next.result.value, converter)) {
+        throwIfAborted(signal);
         yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
       }
     }
 
+    throwIfAborted(signal);
     await persistOpenWorkflow(context);
+    throwIfAborted(signal);
     const clientToolCallEvent = pendingClientToolCallEvent(context, toolCallMetadataByName);
 
     if (clientToolCallEvent) {
+      throwIfAborted(signal);
       yield parseAndTrackProducedItem(producedItemIds, existingItemIds, clientToolCallEvent);
     }
   } catch (error) {

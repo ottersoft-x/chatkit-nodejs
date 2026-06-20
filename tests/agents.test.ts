@@ -3992,6 +3992,54 @@ describe("streamAgentResponse", () => {
     );
   });
 
+  test("explicit cancellation after SDK completion skips final context output", async () => {
+    const store = new TestStore();
+    const agentContext = createContext(store);
+    const controller = new AbortController();
+    let finishContext!: (result: IteratorResult<ThreadStreamEvent>) => void;
+    const contextIterator = {
+      next: () =>
+        new Promise<IteratorResult<ThreadStreamEvent>>((resolve) => {
+          finishContext = resolve;
+        }),
+      return: async () => ({ done: true as const, value: undefined }),
+    };
+    (agentContext as unknown as Pick<AgentContext<RequestContext>, "events">).events = () => ({
+      [Symbol.asyncIterator]: () => contextIterator,
+    });
+    (agentContext as unknown as Pick<AgentContext<RequestContext>, "closeEvents">).closeEvents =
+      () => {
+        controller.abort();
+        finishContext({ done: true, value: undefined });
+      };
+    agentContext.workflowItem = storedWorkflowItem({
+      workflow: {
+        type: "custom",
+        tasks: [{ type: "custom", title: "Prepare", status_indicator: "loading" }],
+        expanded: true,
+      },
+    });
+    agentContext.setClientToolCall(new ClientToolCall("get_selection"));
+    const stream = {
+      [Symbol.asyncIterator](): AsyncIterator<unknown> {
+        return {
+          async next() {
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+
+    await expect(
+      collect(
+        streamAgentResponse(agentContext, stream, {
+          signal: controller.signal,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(StreamCancelledError);
+    expect(store.savedThreadItems).toEqual([]);
+  });
+
   test("emits compacted streaming annotation added events", async () => {
     const agentContext = createContext();
     const events = await collect(
