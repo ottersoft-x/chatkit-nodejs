@@ -72,7 +72,10 @@ function isPageRecord(value: unknown): value is Page<unknown> {
     isRecord(value) &&
     Array.isArray(value.data) &&
     typeof value.has_more === "boolean" &&
-    (!("after" in value) || typeof value.after === "string" || value.after === null)
+    (!("after" in value) ||
+      typeof value.after === "string" ||
+      value.after === null ||
+      value.after === undefined)
   );
 }
 

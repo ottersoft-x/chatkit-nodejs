@@ -159,6 +159,16 @@ test("sanitizeClientPayload handles pages without after cursor", () => {
   assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
 });
 
+test("sanitizeClientPayload handles pages with undefined after cursor", () => {
+  const sanitized = sanitizeClientPayload({
+    data: [userMessage],
+    has_more: false,
+    after: undefined,
+  });
+
+  assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
+});
+
 test("sanitizeClientPayload uses parsed item defaults before sanitizing", () => {
   const sanitized = sanitizeClientPayload({
     id: "msg_defaulted",
