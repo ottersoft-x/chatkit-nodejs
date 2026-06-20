@@ -6,21 +6,27 @@ import { test } from "node:test";
 
 import { WidgetTemplate, createActionConfig } from "chatkit-nodejs";
 
-import { loadConsumerRelativeTemplate } from "./consumer.js";
+import { loadConsumerRelativeTemplate } from "./consumer/consumer.js";
 
-const fixtureUrl = new URL("./fixtures/relative.widget", import.meta.url);
+const consumerFixtureUrl = new URL("./consumer/fixtures/relative.widget", import.meta.url);
+const decoyFixtureUrl = new URL("./fixtures/relative.widget", import.meta.url);
 
-async function writeRelativeWidgetFixture(): Promise<void> {
+async function writeWidgetFixture(fixtureUrl: URL, name: string, message: string): Promise<void> {
   const fixturePath = fileURLToPath(fixtureUrl);
   await mkdir(dirname(fixturePath), { recursive: true });
   await writeFile(
     fixturePath,
     JSON.stringify({
       version: "1.0",
-      name: "relative-smoke",
-      template: "{\"type\":\"Card\",\"children\":[{\"type\":\"Text\",\"value\":\"{{ message }}\"}]}",
+      name,
+      template: `{"type":"Card","children":[{"type":"Text","value":"${message}: {{ message }}"}]}`,
     }),
   );
+}
+
+async function writeRelativeWidgetFixtures(): Promise<void> {
+  await writeWidgetFixture(consumerFixtureUrl, "relative-smoke", "Consumer");
+  await writeWidgetFixture(decoyFixtureUrl, "test-relative-decoy", "Decoy");
 }
 
 test("imports the compiled package through package exports", () => {
@@ -35,7 +41,7 @@ test("imports the compiled package through package exports", () => {
 });
 
 test("loads caller-relative widget files from a consumer module", async () => {
-  await writeRelativeWidgetFixture();
+  await writeRelativeWidgetFixtures();
 
   const template = await loadConsumerRelativeTemplate();
   const widget = template.build({ message: "Loaded from consumer" });
@@ -43,6 +49,6 @@ test("loads caller-relative widget files from a consumer module", async () => {
   assert.equal(template.name, "relative-smoke");
   assert.deepEqual(widget, {
     type: "Card",
-    children: [{ type: "Text", value: "Loaded from consumer" }],
+    children: [{ type: "Text", value: "Consumer: Loaded from consumer" }],
   });
 });
