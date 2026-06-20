@@ -1,5 +1,6 @@
 import { NotFoundError, UnsupportedOperationError, ValidationError } from "./errors.js";
 import { decodeJsonBytes, encodeJsonBytes } from "./serialization.js";
+import { StreamCancelledError } from "./stream-runtime.js";
 import type { AttachmentStore, Store } from "./store.js";
 import { ThreadMetadataSchema, type Page, type ThreadItem, type ThreadMetadata } from "./types/core.js";
 import {
@@ -25,6 +26,9 @@ import {
   type UserMessageInput,
 } from "./types/server.js";
 
+export { StreamCancelledError } from "./stream-runtime.js";
+export type { ChatKitStreamRuntime } from "./stream-runtime.js";
+
 const sseEncoder = new TextEncoder();
 const sseDecoder = new TextDecoder();
 
@@ -45,13 +49,6 @@ export class StreamingResult implements AsyncIterable<Uint8Array> {
 
 export class NonStreamingResult {
   constructor(readonly json: Uint8Array) {}
-}
-
-export class StreamCancelledError extends Error {
-  constructor(message = "Stream cancelled") {
-    super(message);
-    this.name = "StreamCancelledError";
-  }
 }
 
 export abstract class ChatKitServer<TContext = unknown> {

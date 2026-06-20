@@ -5,6 +5,7 @@ export * from "./http.js";
 export * from "./serialization.js";
 export * from "./server.js";
 export * from "./sqlite-store.js";
+export * from "./stream-runtime.js";
 export * from "./store.js";
 export * from "./types/core.js";
 export * from "./types/server.js";
