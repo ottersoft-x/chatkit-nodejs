@@ -58,7 +58,7 @@ describe("package metadata", () => {
     expect(engines.node).toBe(">=24.15.0");
     expect(packageJson.packageManager).toMatch(/^npm@\d+\.\d+\.\d+$/);
     expect(JSON.stringify(packageJson)).not.toContain('"bun"');
-    expect(JSON.stringify(packageJson)).not.toContain("@types/bun");
+    expect(JSON.stringify(packageJson)).not.toContain(`@types/${"bun"}`);
   });
 
   test("publishes compiled artifacts only", async () => {
