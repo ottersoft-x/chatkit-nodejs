@@ -111,13 +111,39 @@ describe("server request schemas", () => {
       allow_retry: true,
     });
 
-    expect(() =>
+    expect(
       ThreadStreamEventSchema.parse({
         type: "error",
         code: "stream_error",
         allow_retry: true,
       }),
-    ).toThrow();
+    ).toEqual({
+      type: "error",
+      code: "stream_error",
+      allow_retry: true,
+    });
+  });
+
+  test("parses custom stream error codes as open strings", () => {
+    expect(
+      ThreadStreamEventSchema.parse({
+        type: "error",
+        code: "rate_limit.exceeded",
+        allow_retry: false,
+      }),
+    ).toEqual({
+      type: "error",
+      code: "rate_limit.exceeded",
+      allow_retry: false,
+    });
+  });
+
+  test("defaults error code to custom and allow_retry to false", () => {
+    expect(ThreadStreamEventSchema.parse({ type: "error" })).toEqual({
+      type: "error",
+      code: "custom",
+      allow_retry: false,
+    });
   });
 
   test("parses attachment delete requests with attachment id only", () => {

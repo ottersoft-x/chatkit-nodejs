@@ -11,6 +11,7 @@ import { expect } from "./helpers/expect.js";
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents/index.js";
 import { ResponseStreamConverter } from "../src/agents/annotations.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
+import { StreamCancelledError } from "../src/stream-runtime.js";
 import { BaseStore, type Store, type StoreItemType } from "../src/store.js";
 import type {
   Annotation,
@@ -3926,6 +3927,117 @@ describe("streamAgentResponse", () => {
     expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
       "Cannot stream events after the agent context has completed.",
     );
+  });
+
+  test("explicit cancellation stops a never-settling SDK stream", async () => {
+    const agentContext = createContext();
+    const controller = new AbortController();
+    let returned = false;
+    const stream = {
+      [Symbol.asyncIterator](): AsyncIterator<unknown> {
+        return {
+          next: () => new Promise<IteratorResult<unknown>>(() => {}),
+          async return() {
+            returned = true;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+
+    const iterator = streamAgentResponse(agentContext, stream, {
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    controller.abort();
+
+    await expect(next).rejects.toBeInstanceOf(StreamCancelledError);
+    expect(returned).toBe(true);
+    expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
+      "Cannot stream events after the agent context has completed.",
+    );
+  });
+
+  test("explicit cancellation does not wait for async generator return behind pending next", async () => {
+    const agentContext = createContext();
+    const controller = new AbortController();
+    async function* stream(): AsyncIterable<unknown> {
+      await new Promise<void>(() => {});
+      yield rawResponse({
+        type: "response.output_text.delta",
+        item_id: "msg_never",
+        content_index: 0,
+        delta: "late",
+      });
+    }
+
+    const iterator = streamAgentResponse(agentContext, stream(), {
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+    const next = iterator.next();
+    controller.abort();
+
+    const result = await Promise.race([
+      next.then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+
+    expect(result).toBeInstanceOf(StreamCancelledError);
+    expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
+      "Cannot stream events after the agent context has completed.",
+    );
+  });
+
+  test("explicit cancellation after SDK completion skips final context output", async () => {
+    const store = new TestStore();
+    const agentContext = createContext(store);
+    const controller = new AbortController();
+    let finishContext!: (result: IteratorResult<ThreadStreamEvent>) => void;
+    const contextIterator = {
+      next: () =>
+        new Promise<IteratorResult<ThreadStreamEvent>>((resolve) => {
+          finishContext = resolve;
+        }),
+      return: async () => ({ done: true as const, value: undefined }),
+    };
+    (agentContext as unknown as Pick<AgentContext<RequestContext>, "events">).events = () => ({
+      [Symbol.asyncIterator]: () => contextIterator,
+    });
+    (agentContext as unknown as Pick<AgentContext<RequestContext>, "closeEvents">).closeEvents =
+      () => {
+        controller.abort();
+        finishContext({ done: true, value: undefined });
+      };
+    agentContext.workflowItem = storedWorkflowItem({
+      workflow: {
+        type: "custom",
+        tasks: [{ type: "custom", title: "Prepare", status_indicator: "loading" }],
+        expanded: true,
+      },
+    });
+    agentContext.setClientToolCall(new ClientToolCall("get_selection"));
+    const stream = {
+      [Symbol.asyncIterator](): AsyncIterator<unknown> {
+        return {
+          async next() {
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+
+    await expect(
+      collect(
+        streamAgentResponse(agentContext, stream, {
+          signal: controller.signal,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(StreamCancelledError);
+    expect(store.savedThreadItems).toEqual([]);
   });
 
   test("emits compacted streaming annotation added events", async () => {

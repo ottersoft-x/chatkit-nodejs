@@ -362,7 +362,7 @@ export const ClientEffectEventSchema = z.object({
 
 export const ErrorEventSchema = z.object({
   type: z.literal("error"),
-  code: z.enum(["stream.error", "custom"]).default("custom"),
+  code: z.string().default("custom"),
   message: z.string().nullable().optional(),
   allow_retry: z.boolean().default(false),
 });

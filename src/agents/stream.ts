@@ -4,6 +4,12 @@ import {
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
 } from "@openai/agents";
+import {
+  nextWithAbort,
+  StreamCancelledError,
+  returnIterator as returnIteratorWithAbort,
+  throwIfAborted,
+} from "../stream-runtime.js";
 import type { AssistantMessageContent, ThreadItem } from "../types/core.js";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server.js";
 import { convertTextContentPart, defaultResponseStreamConverter } from "./annotations.js";
@@ -361,6 +367,24 @@ function tagNext<T>(source: StreamSource, promise: PromiseLike<IteratorResult<T>
   return tagged;
 }
 
+function tagNextWithAbort<T>(
+  source: StreamSource,
+  next: Promise<IteratorResult<T>>,
+  signal: AbortSignal,
+): TaggedNext<T> {
+  const tagged = tagNext(source, next);
+  const observedNext = tagged.promise.then(({ result }) => result);
+  tagged.promise = nextWithAbort(observedNext, signal).then(
+    (result) => tagged.result ?? { source, result },
+    (error: unknown) => {
+      tagged.error ??= error;
+      throw error;
+    },
+  );
+  tagged.promise.catch(() => undefined);
+  return tagged;
+}
+
 function isGuardrailTripwire(error: unknown): boolean {
   return (
     error instanceof InputGuardrailTripwireTriggered ||
@@ -406,7 +430,7 @@ function rollbackProducedItemEvents(producedItemIds: ReadonlySet<string>): Threa
 
 async function returnIterator<T>(iterator: AsyncIterator<T>): Promise<void> {
   try {
-    await iterator.return?.();
+    await returnIteratorWithAbort(iterator);
   } catch {
     // Iterator cleanup is best-effort and must not mask the stream error.
   }
@@ -916,6 +940,7 @@ export async function* streamAgentResponse<TContext>(
   options: StreamAgentResponseOptions = {},
 ): AsyncIterable<ThreadStreamEvent> {
   const converter = options.converter ?? defaultResponseStreamConverter;
+  const signal = options.signal ?? new AbortController().signal;
   const recentItems = await context.store.loadThreadItems(
     context.thread.id,
     null,
@@ -940,8 +965,9 @@ export async function* streamAgentResponse<TContext>(
   const producedItemIds = new Set<string>();
   let sdkDone = false;
   let contextDone = false;
-  let sdkNext = tagNext("sdk", sdkIterator.next());
+  let sdkNext = tagNextWithAbort("sdk", sdkIterator.next(), signal);
   let contextNext = tagNext("context", contextIterator.next());
+  let caughtError: unknown;
 
   try {
     while (!sdkDone || !contextDone) {
@@ -951,6 +977,8 @@ export async function* streamAgentResponse<TContext>(
         throw sdkNext.error;
       }
 
+      throwIfAborted(signal);
+
       if (!contextDone && contextNext.result) {
         if (contextNext.result.result.done) {
           contextDone = true;
@@ -958,6 +986,7 @@ export async function* streamAgentResponse<TContext>(
           const value = contextNext.result.result.value;
           contextNext = tagNext("context", contextIterator.next());
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+            throwIfAborted(signal);
             yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
           }
         }
@@ -979,9 +1008,11 @@ export async function* streamAgentResponse<TContext>(
       }
 
       const next = await Promise.race(contenders);
+      throwIfAborted(signal);
 
       if (next.source === "sdk" && !contextDone) {
         await Promise.resolve();
+        throwIfAborted(signal);
 
         if (contextNext.result) {
           if (contextNext.result.result.done) {
@@ -990,6 +1021,7 @@ export async function* streamAgentResponse<TContext>(
             const value = contextNext.result.result.value;
             contextNext = tagNext("context", contextIterator.next());
             for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+              throwIfAborted(signal);
               yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
             }
             continue;
@@ -1005,6 +1037,7 @@ export async function* streamAgentResponse<TContext>(
           const value = next.result.value as ThreadStreamEvent;
 
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
+            throwIfAborted(signal);
             yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
           }
         }
@@ -1017,7 +1050,7 @@ export async function* streamAgentResponse<TContext>(
         continue;
       }
 
-      sdkNext = tagNext("sdk", sdkIterator.next());
+      sdkNext = tagNextWithAbort("sdk", sdkIterator.next(), signal);
       const metadata = toolCallMetadata(next.result.value);
 
       if (metadata) {
@@ -1025,17 +1058,22 @@ export async function* streamAgentResponse<TContext>(
       }
 
       for (const event of await convertSdkEvent(context, state, next.result.value, converter)) {
+        throwIfAborted(signal);
         yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
       }
     }
 
+    throwIfAborted(signal);
     await persistOpenWorkflow(context);
+    throwIfAborted(signal);
     const clientToolCallEvent = pendingClientToolCallEvent(context, toolCallMetadataByName);
 
     if (clientToolCallEvent) {
+      throwIfAborted(signal);
       yield parseAndTrackProducedItem(producedItemIds, existingItemIds, clientToolCallEvent);
     }
   } catch (error) {
+    caughtError = error;
     if (!isGuardrailTripwire(error)) {
       throw error;
     }
@@ -1047,7 +1085,12 @@ export async function* streamAgentResponse<TContext>(
     throw error;
   } finally {
     context.closeEvents();
-    await returnIterator(sdkIterator);
+    const sdkReturn = returnIterator(sdkIterator);
+    if (signal.aborted || caughtError instanceof StreamCancelledError) {
+      void sdkReturn;
+    } else {
+      await sdkReturn;
+    }
     await returnIterator(contextIterator);
   }
 }

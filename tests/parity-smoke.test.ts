@@ -225,4 +225,13 @@ describe("ChatKit JS parity smoke", () => {
     expect(events.some((event) => event.type === "thread.item.done")).toBe(true);
     expect(events.some((event) => event.type === "thread.item.updated")).toBe(true);
   });
+
+  test("exports run lifecycle helpers", async () => {
+    const pkg = await import("../src/index.js");
+
+    expect(typeof pkg.ResponseRunManager).toBe("function");
+    expect(typeof pkg.StreamError).toBe("function");
+    expect(typeof pkg.CustomStreamError).toBe("function");
+    expect(typeof pkg.StreamCancelledError).toBe("function");
+  });
 });
