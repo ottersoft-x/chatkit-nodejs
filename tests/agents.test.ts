@@ -3959,6 +3959,39 @@ describe("streamAgentResponse", () => {
     );
   });
 
+  test("explicit cancellation does not wait for async generator return behind pending next", async () => {
+    const agentContext = createContext();
+    const controller = new AbortController();
+    async function* stream(): AsyncIterable<unknown> {
+      await new Promise<void>(() => {});
+      yield rawResponse({
+        type: "response.output_text.delta",
+        item_id: "msg_never",
+        content_index: 0,
+        delta: "late",
+      });
+    }
+
+    const iterator = streamAgentResponse(agentContext, stream(), {
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+    const next = iterator.next();
+    controller.abort();
+
+    const result = await Promise.race([
+      next.then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+
+    expect(result).toBeInstanceOf(StreamCancelledError);
+    expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
+      "Cannot stream events after the agent context has completed.",
+    );
+  });
+
   test("emits compacted streaming annotation added events", async () => {
     const agentContext = createContext();
     const events = await collect(
