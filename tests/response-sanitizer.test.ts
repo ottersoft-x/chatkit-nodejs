@@ -339,6 +339,24 @@ test("sanitizeClientPayload preserves defaulted nested thread item page fields",
   assert.equal(items.has_more, false);
 });
 
+test("sanitizeClientPayload preserves explicit undefined defaulted nested thread item page fields", () => {
+  const value = {
+    ...threadResponse,
+    items: {
+      data: undefined,
+      metadata: { keep: true },
+    },
+  };
+  const sanitized = sanitizeClientPayload(value);
+  const items = sanitized.items as { data: unknown[]; has_more: boolean; metadata?: unknown };
+
+  assert.deepEqual(items.metadata, {
+    keep: true,
+  });
+  assert.deepEqual(items.data, []);
+  assert.equal(items.has_more, false);
+});
+
 test("sanitizeClientPayload preserves nested event thread item page fields", () => {
   const value = {
     type: "thread.created",
@@ -460,6 +478,37 @@ test("sanitizeClientPayload treats page-shaped payloads as pages before sync cus
   expectType<ClientPage<typeof input, ClientThreadItem>>(sanitized);
   assert.equal(sanitized.updated_item, "page-field");
   const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
+test("sanitizeClientPayload types readonly supported item pages as sanitized pages", () => {
+  const input: { data: readonly ThreadItemPayloadInput[]; has_more: false } = {
+    data: [userMessage],
+    has_more: false,
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientPage<typeof input, ClientThreadItem>>(sanitized);
+  const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
+test("sanitizeClientPayload falls through unsupported pages to sync custom action responses", () => {
+  const input = {
+    data: [attachment],
+    has_more: false,
+    updated_item: userMessage,
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientSyncCustomActionResponse>(sanitized);
+  const item = sanitized.updated_item;
   if (!item || item.type !== "user_message") {
     throw new Error("Expected user message");
   }

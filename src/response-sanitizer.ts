@@ -28,12 +28,12 @@ export type ThreadPayloadInput = z.input<typeof ThreadSchema>;
 export type ThreadStreamEventPayloadInput = z.input<typeof ThreadStreamEventSchema>;
 export type SyncCustomActionResponsePayloadInput = z.input<typeof SyncCustomActionResponseSchema>;
 export type ThreadItemPagePayloadInput = {
-  data: ThreadItemPayloadInput[];
+  data: readonly ThreadItemPayloadInput[];
   has_more?: boolean | undefined;
   after?: string | null | undefined;
 };
 export type ThreadPagePayloadInput = {
-  data: ThreadPayloadInput[];
+  data: readonly ThreadPayloadInput[];
   has_more?: boolean | undefined;
   after?: string | null | undefined;
 };
@@ -83,23 +83,21 @@ export type ClientSyncCustomActionResponse = {
 export type ClientPayload<T> =
   T extends AttachmentPayloadInput
     ? ClientAttachment
-    : T extends { data: readonly (infer _TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
-      ? T extends ThreadItemPagePayloadInput
-        ? ClientPage<T, ClientThreadItem>
-        : T extends ThreadPagePayloadInput
-          ? ClientPage<T, ClientThread>
-          : T
-      : T extends ThreadItemPayloadInput
-        ? ClientThreadItem
-        : T extends ThreadPayloadInput
-          ? ClientThread
-          : T extends ThreadStreamEventPayloadInput
-            ? ClientThreadStreamEvent
-            : T extends { updated_item?: infer TUpdatedItem }
-              ? [TUpdatedItem] extends [ThreadItemPayloadInput | null | undefined]
-                ? ClientSyncCustomActionResponse
-                : T
-            : T;
+    : T extends ThreadItemPagePayloadInput
+      ? ClientPage<T, ClientThreadItem>
+      : T extends ThreadPagePayloadInput
+        ? ClientPage<T, ClientThread>
+        : T extends ThreadItemPayloadInput
+          ? ClientThreadItem
+          : T extends ThreadPayloadInput
+            ? ClientThread
+            : T extends ThreadStreamEventPayloadInput
+              ? ClientThreadStreamEvent
+              : T extends { updated_item?: infer TUpdatedItem }
+                ? [TUpdatedItem] extends [ThreadItemPayloadInput | null | undefined]
+                  ? ClientSyncCustomActionResponse
+                  : T
+                : T;
 
 function jsonClone<T>(value: T): T {
   const json = JSON.stringify(omitUndefinedDeep(value));
@@ -128,7 +126,7 @@ function isPageRecord(value: unknown): value is PageRecord {
 function isDefaultablePageRecord(value: unknown): value is DefaultablePageRecord {
   return (
     isRecord(value) &&
-    (!("data" in value) || Array.isArray(value.data)) &&
+    (!("data" in value) || Array.isArray(value.data) || value.data === undefined) &&
     (!("has_more" in value) || typeof value.has_more === "boolean" || value.has_more === undefined) &&
     (!("after" in value) ||
       typeof value.after === "string" ||
