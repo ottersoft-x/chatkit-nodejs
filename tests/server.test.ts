@@ -3,8 +3,14 @@ import { describe, test } from "node:test";
 import { expect } from "./helpers/expect.js";
 
 import type { ActionConfig } from "../src/actions.js";
-import { NotFoundError, UnsupportedOperationError } from "../src/errors.js";
-import { ChatKitServer, NonStreamingResult, StreamCancelledError, StreamingResult } from "../src/server.js";
+import { CustomStreamError, NotFoundError, StreamError, UnsupportedOperationError } from "../src/errors.js";
+import {
+  ChatKitServer,
+  NonStreamingResult,
+  StreamCancelledError,
+  StreamingResult,
+  type ChatKitStreamRuntime,
+} from "../src/server.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import type { AttachmentStore } from "../src/store.js";
 import type { Attachment, ThreadItem, ThreadMetadata } from "../src/types/core.js";
@@ -33,6 +39,7 @@ type Responder = (
   thread: ThreadMetadata,
   inputUserMessage: UserMessageItem | null,
   context: RequestContext,
+  runtime: ChatKitStreamRuntime,
 ) => AsyncIterable<ThreadStreamEvent>;
 type Transcriber = (
   audio: AudioInput,
@@ -43,6 +50,7 @@ type ActionResponder = (
   action: ActionConfig,
   sender: WidgetItem | null,
   context: RequestContext,
+  runtime: ChatKitStreamRuntime,
 ) => AsyncIterable<ThreadStreamEvent>;
 type SyncActionResponder = (
   thread: ThreadMetadata,
@@ -202,8 +210,9 @@ class TestServer extends ChatKitServer<RequestContext> {
     thread: ThreadMetadata,
     inputUserMessage: UserMessageItem | null,
     context: RequestContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
-    return this.responder(thread, inputUserMessage, context);
+    return this.responder(thread, inputUserMessage, context, runtime);
   }
 
   override async addFeedback(
@@ -227,8 +236,12 @@ class TestServer extends ChatKitServer<RequestContext> {
     action: ActionConfig,
     sender: WidgetItem | null,
     context: RequestContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
-    return this.actionResponder?.(thread, action, sender, context) ?? super.action(thread, action, sender, context);
+    return (
+      this.actionResponder?.(thread, action, sender, context, runtime) ??
+      super.action(thread, action, sender, context, runtime)
+    );
   }
 
   override syncAction(
@@ -353,6 +366,52 @@ describe("ChatKitServer", () => {
     });
   });
 
+  test("strips attachment metadata from item list and thread get responses without mutating store", async () => {
+    const server = new TestServer();
+    const thread = makeThread("thr_metadata_sanitize");
+    const attachment: Attachment = {
+      id: "atc_metadata_sanitize",
+      type: "file",
+      name: "notes.txt",
+      mime_type: "text/plain",
+      metadata: { source: "internal" },
+    };
+    const userMessage: UserMessageItem = {
+      ...makeUserMessage("msg_metadata_sanitize", thread.id),
+      attachments: [{ ...attachment, thread_id: thread.id }],
+    };
+    await server.store.saveThread(thread, defaultContext);
+    await server.store.saveAttachment(attachment, defaultContext);
+    await server.store.addThreadItem(thread.id, userMessage, defaultContext);
+
+    const itemList = (await server.process(
+      JSON.stringify({
+        type: "items.list",
+        params: { thread_id: thread.id, limit: 10, order: "asc" },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as NonStreamingResult;
+    const listedItem = (decodeJson(itemList) as { data: ThreadItem[] }).data[0] as UserMessageItem;
+    expect(listedItem.attachments[0]).not.toHaveProperty("metadata");
+
+    const threadGet = (await server.process(
+      JSON.stringify({
+        type: "threads.get_by_id",
+        params: { thread_id: thread.id },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as NonStreamingResult;
+    const responseItem = (decodeJson(threadGet) as { items: { data: ThreadItem[] } }).items
+      .data[0] as UserMessageItem;
+    expect(responseItem.attachments[0]).not.toHaveProperty("metadata");
+
+    await expect(server.store.loadAttachment(attachment.id, defaultContext)).resolves.toMatchObject({
+      metadata: { source: "internal" },
+    });
+  });
+
   test("dispatches item feedback with context", async () => {
     const server = new TestServer();
 
@@ -431,9 +490,11 @@ describe("ChatKitServer", () => {
       mime_type: "image/png",
       preview_url: "https://example.com/preview.png",
       upload_descriptor: { url: "https://example.com/upload", method: "PUT", headers: {} },
+    });
+    await expect(server.store.loadAttachment("atc_1", defaultContext)).resolves.toMatchObject({
+      id: "atc_1",
       metadata: { source: "test" },
     });
-    await expect(server.store.loadAttachment("atc_1", defaultContext)).resolves.toEqual(attachment);
   });
 
   test("deletes attachments from the attachment and metadata stores", async () => {
@@ -579,6 +640,9 @@ describe("ChatKitServer", () => {
     ]);
     expect(events[0]).toMatchObject({ type: "thread.created", thread: { status: { type: "active" } } });
     const userMessageEvent = events[1];
+    if (!userMessageEvent) {
+      throw new Error("Expected streamed user message");
+    }
     expect(userMessageEvent).toMatchObject({
       type: "thread.item.done",
       item: {
@@ -588,6 +652,10 @@ describe("ChatKitServer", () => {
         inference_options: { model: "gpt-test" },
       },
     });
+    if (userMessageEvent.type !== "thread.item.done" || userMessageEvent.item.type !== "user_message") {
+      throw new Error("Expected streamed user message");
+    }
+    expect(userMessageEvent.item.attachments[0]).not.toHaveProperty("metadata");
     expect(responderCalls).toHaveLength(1);
     const responderCall = responderCalls[0];
     expect(responderCall).toBeDefined();
@@ -614,6 +682,47 @@ describe("ChatKitServer", () => {
       id: "atc_existing",
       thread_id: threadId,
     });
+  });
+
+  test("strips attachment metadata from streamed replacement events", async () => {
+    const attachment: Attachment = {
+      id: "atc_replace_sanitize",
+      type: "file",
+      name: "replace.txt",
+      mime_type: "text/plain",
+      metadata: { source: "internal" },
+    };
+    const server = new TestServer(async function* (thread) {
+      yield {
+        type: "thread.item.replaced",
+        item: {
+          ...makeUserMessage("msg_replace_sanitize", thread.id),
+          attachments: [{ ...attachment, thread_id: thread.id }],
+        },
+      };
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+    const events = await decodeStream(result);
+    const replaced = events.find((event) => event.type === "thread.item.replaced");
+    if (!replaced || replaced.type !== "thread.item.replaced" || replaced.item.type !== "user_message") {
+      throw new Error("Expected replacement event");
+    }
+
+    expect(replaced.item.attachments[0]).not.toHaveProperty("metadata");
   });
 
   test("persists the submitted user message before streaming a created thread", async () => {
@@ -1556,6 +1665,119 @@ describe("ChatKitServer", () => {
     expect(events.filter((event) => event.type === "error")).toEqual([
       { type: "error", code: "stream.error", allow_retry: true },
     ]);
+  });
+
+  test("streams custom stream errors with message and retry policy", async () => {
+    const server = new TestServer(async function* () {
+      throw new CustomStreamError("The user-facing failure", { allowRetry: false });
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      code: "custom",
+      message: "The user-facing failure",
+      allow_retry: false,
+    });
+  });
+
+  test("streams typed stream errors with default retry policy", async () => {
+    const server = new TestServer(async function* () {
+      throw new StreamError("rate_limit.exceeded");
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      code: "rate_limit.exceeded",
+      allow_retry: false,
+    });
+  });
+
+  test("streams stream.error as retryable by default", async () => {
+    const server = new TestServer(async function* () {
+      throw new StreamError("stream.error");
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      code: "stream.error",
+      allow_retry: true,
+    });
+  });
+
+  test("streams typed stream errors with retry override", async () => {
+    const server = new TestServer(async function* () {
+      throw new StreamError("stream.error", { allowRetry: false });
+    });
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      code: "stream.error",
+      allow_retry: false,
+    });
   });
 
   test("suppresses hidden context added and done events while persisting the done item", async () => {

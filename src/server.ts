@@ -1,6 +1,17 @@
-import { NotFoundError, UnsupportedOperationError, ValidationError } from "./errors.js";
+import {
+  CustomStreamError,
+  NotFoundError,
+  StreamError,
+  UnsupportedOperationError,
+  ValidationError,
+} from "./errors.js";
+import { sanitizeClientPayload, sanitizeThreadStreamEvent } from "./response-sanitizer.js";
 import { decodeJsonBytes, encodeJsonBytes } from "./serialization.js";
-import { StreamCancelledError } from "./stream-runtime.js";
+import {
+  StreamCancelledError,
+  defaultChatKitStreamRuntime,
+  type ChatKitStreamRuntime,
+} from "./stream-runtime.js";
 import type { AttachmentStore, Store } from "./store.js";
 import { ThreadMetadataSchema, type Page, type ThreadItem, type ThreadMetadata } from "./types/core.js";
 import {
@@ -51,6 +62,20 @@ export class NonStreamingResult {
   constructor(readonly json: Uint8Array) {}
 }
 
+export class StreamingEventResult {
+  constructor(
+    private readonly createEvents: (runtime: ChatKitStreamRuntime) => AsyncIterable<ThreadStreamEvent>,
+  ) {}
+
+  stream(runtime: ChatKitStreamRuntime = defaultChatKitStreamRuntime()): AsyncIterable<ThreadStreamEvent> {
+    return this.createEvents(runtime);
+  }
+}
+
+export interface ChatKitProcessOptions {
+  runtime?: ChatKitStreamRuntime;
+}
+
 export abstract class ChatKitServer<TContext = unknown> {
   constructor(
     readonly store: Store<TContext>,
@@ -61,6 +86,7 @@ export abstract class ChatKitServer<TContext = unknown> {
     thread: ThreadMetadata,
     inputUserMessage: UserMessageItem | null,
     context: TContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent>;
 
   async addFeedback(
@@ -81,6 +107,7 @@ export abstract class ChatKitServer<TContext = unknown> {
     _action: ThreadCustomActionParams["action"],
     _sender: WidgetItem | null,
     _context: TContext,
+    _runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
     throw new UnsupportedOperationError(
       "The action() method must be overridden to react to actions.",
@@ -98,8 +125,12 @@ export abstract class ChatKitServer<TContext = unknown> {
     );
   }
 
-  getStreamOptions(_thread: ThreadMetadata, _context: TContext): StreamOptions {
-    return { allow_cancel: true };
+  getStreamOptions(
+    _thread: ThreadMetadata,
+    _context: TContext,
+    runtime: ChatKitStreamRuntime,
+  ): StreamOptions {
+    return { allow_cancel: runtime.supportsExplicitCancel };
   }
 
   async handleStreamCancelled(
@@ -123,23 +154,38 @@ export abstract class ChatKitServer<TContext = unknown> {
         thread_id: thread.id,
         created_at: new Date().toISOString(),
         type: "sdk_hidden_context",
-        content: "Stream cancelled by client.",
+        content: "The user cancelled the stream. Stop responding to the prior request.",
       },
       context,
     );
   }
 
-  async process(
+  async processRequest(
     request: ProcessRequestInput,
     context: TContext,
-  ): Promise<StreamingResult | NonStreamingResult> {
+  ): Promise<StreamingEventResult | NonStreamingResult> {
     const parsed: ChatKitRequest = ChatKitRequestSchema.parse(decodeJsonBytes(request));
 
     if (isStreamingRequest(parsed)) {
-      return new StreamingResult(this.processStreaming(parsed, context));
+      return new StreamingEventResult((runtime) => this.processStreamingEvents(parsed, context, runtime));
     }
 
     return new NonStreamingResult(await this.processNonStreaming(parsed, context));
+  }
+
+  async process(
+    request: ProcessRequestInput,
+    context: TContext,
+    options: ChatKitProcessOptions = {},
+  ): Promise<StreamingResult | NonStreamingResult> {
+    const result = await this.processRequest(request, context);
+
+    if (result instanceof NonStreamingResult) {
+      return result;
+    }
+
+    const runtime = options.runtime ?? defaultChatKitStreamRuntime();
+    return new StreamingResult(this.serializeStreamingEvents(result.stream(runtime)));
   }
 
   protected async processNonStreaming(
@@ -238,19 +284,17 @@ export abstract class ChatKitServer<TContext = unknown> {
     }
   }
 
-  protected async *processStreaming(
-    request: StreamingRequest,
-    context: TContext,
-  ): AsyncIterable<Uint8Array> {
-    for await (const event of this.processStreamingImpl(request, context)) {
+  protected async *serializeStreamingEvents(events: AsyncIterable<ThreadStreamEvent>): AsyncIterable<Uint8Array> {
+    for await (const event of events) {
       const json = sseDecoder.decode(this.serialize(event));
       yield sseEncoder.encode(`data: ${json}\n\n`);
     }
   }
 
-  protected async *processStreamingImpl(
+  protected async *processStreamingEvents(
     request: StreamingRequest,
     context: TContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
     switch (request.type) {
       case "threads.create": {
@@ -267,19 +311,21 @@ export abstract class ChatKitServer<TContext = unknown> {
 
         yield { type: "thread.created", thread: this.toThreadResponse(thread) };
         yield { type: "thread.item.done", item: userMessage };
-        yield* this.processEvents(thread, context, () => this.respond(thread, userMessage, context));
+        yield* this.processEvents(thread, context, runtime, () =>
+          this.respond(thread, userMessage, context, runtime),
+        );
         return;
       }
 
       case "threads.add_user_message": {
         const thread = await this.store.loadThread(request.params.thread_id, context);
         const userMessage = await this.buildUserMessageItem(request.params.input, thread, context);
-        yield* this.processNewThreadItemRespond(thread, userMessage, context);
+        yield* this.processNewThreadItemRespond(thread, userMessage, context, runtime);
         return;
       }
 
       default:
-        yield* this.processStreamingContinuation(request, context);
+        yield* this.processStreamingContinuation(request, context, runtime);
     }
   }
 
@@ -309,10 +355,11 @@ export abstract class ChatKitServer<TContext = unknown> {
     thread: ThreadMetadata,
     item: UserMessageItem,
     context: TContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
     await this.persistUserMessageItem(thread, item, context);
     yield { type: "thread.item.done", item };
-    yield* this.processEvents(thread, context, () => this.respond(thread, item, context));
+    yield* this.processEvents(thread, context, runtime, () => this.respond(thread, item, context, runtime));
   }
 
   protected async persistUserMessageItem(
@@ -330,6 +377,7 @@ export abstract class ChatKitServer<TContext = unknown> {
   protected async *processStreamingContinuation(
     request: Exclude<StreamingRequest, { type: "threads.create" | "threads.add_user_message" }>,
     context: TContext,
+    runtime: ChatKitStreamRuntime,
   ): AsyncIterable<ThreadStreamEvent> {
     switch (request.type) {
       case "threads.add_client_tool_output": {
@@ -353,7 +401,7 @@ export abstract class ChatKitServer<TContext = unknown> {
           context,
         );
         await this.cleanupPendingClientToolCall(thread, context);
-        yield* this.processEvents(thread, context, () => this.respond(thread, null, context));
+        yield* this.processEvents(thread, context, runtime, () => this.respond(thread, null, context, runtime));
         return;
       }
 
@@ -367,9 +415,9 @@ export abstract class ChatKitServer<TContext = unknown> {
 
         const updatedItem = this.applyStructuredInputSubmission(item, request.params.input);
         const server = this;
-        yield* this.processEvents(thread, context, async function* (): AsyncIterable<ThreadStreamEvent> {
+        yield* this.processEvents(thread, context, runtime, async function* (): AsyncIterable<ThreadStreamEvent> {
           yield { type: "thread.item.replaced", item: updatedItem };
-          yield* server.respond(thread, null, context);
+          yield* server.respond(thread, null, context, runtime);
         });
         return;
       }
@@ -381,7 +429,9 @@ export abstract class ChatKitServer<TContext = unknown> {
           request.params.item_id,
           context,
         );
-        yield* this.processEvents(thread, context, () => this.respond(thread, userMessage, context));
+        yield* this.processEvents(thread, context, runtime, () =>
+          this.respond(thread, userMessage, context, runtime),
+        );
         return;
       }
 
@@ -397,8 +447,8 @@ export abstract class ChatKitServer<TContext = unknown> {
           return;
         }
 
-        yield* this.processEvents(thread, context, () =>
-          this.action(thread, request.params.action, sender, context),
+        yield* this.processEvents(thread, context, runtime, () =>
+          this.action(thread, request.params.action, sender, context, runtime),
         );
         return;
       }
@@ -531,9 +581,17 @@ export abstract class ChatKitServer<TContext = unknown> {
   protected async *processEvents(
     thread: ThreadMetadata,
     context: TContext,
+    runtime: ChatKitStreamRuntime,
     stream: () => AsyncIterable<ThreadStreamEvent>,
   ): AsyncIterable<ThreadStreamEvent> {
-    yield { type: "stream_options", stream_options: this.getStreamOptions(thread, context) };
+    const streamOptions = this.getStreamOptions(thread, context, runtime);
+    yield {
+      type: "stream_options",
+      stream_options: {
+        ...streamOptions,
+        allow_cancel: runtime.supportsExplicitCancel && streamOptions.allow_cancel,
+      },
+    };
     let lastThread = structuredClone(thread);
     const pendingItems = new Map<string, ThreadItem>();
     const updatedPendingItemIds = new Set<string>();
@@ -603,11 +661,11 @@ export abstract class ChatKitServer<TContext = unknown> {
         }
 
         if (!suppressClientEvent) {
-          yield event;
+          yield sanitizeThreadStreamEvent(event);
         }
 
         if (await saveThreadIfChanged()) {
-          yield { type: "thread.updated", thread: this.toThreadResponse(thread) };
+          yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
         }
       }
       completedNormally = true;
@@ -617,6 +675,27 @@ export abstract class ChatKitServer<TContext = unknown> {
         await saveThreadIfChanged();
         await this.handleStreamCancelled(thread, [...pendingItems.values()], context);
         throw error;
+      }
+
+      if (error instanceof CustomStreamError) {
+        completedNormally = true;
+        yield {
+          type: "error",
+          code: "custom",
+          message: error.message,
+          allow_retry: error.allowRetry,
+        };
+        return;
+      }
+
+      if (error instanceof StreamError) {
+        completedNormally = true;
+        yield {
+          type: "error",
+          code: error.code,
+          allow_retry: error.allowRetry,
+        };
+        return;
       }
 
       completedNormally = true;
@@ -629,7 +708,7 @@ export abstract class ChatKitServer<TContext = unknown> {
     }
 
     if (await saveThreadIfChanged()) {
-      yield { type: "thread.updated", thread: this.toThreadResponse(thread) };
+      yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
     }
   }
 
@@ -775,7 +854,7 @@ export abstract class ChatKitServer<TContext = unknown> {
   }
 
   protected serialize(value: unknown): Uint8Array {
-    return encodeJsonBytes(value);
+    return encodeJsonBytes(sanitizeClientPayload(value));
   }
 
   private getAttachmentStore(): AttachmentStore<TContext> {

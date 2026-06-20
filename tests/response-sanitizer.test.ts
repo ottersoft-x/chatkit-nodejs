@@ -138,6 +138,18 @@ test("sanitizeThreadStreamEvent strips metadata from thread response events", ()
   assert.deepEqual(originalItem.attachments[0]!.metadata, { source: "internal" });
 });
 
+test("sanitizeClientPayload does not add absent thread metadata", () => {
+  const { metadata: _metadata, ...input } = threadResponse;
+  const sanitized = sanitizeClientPayload(input);
+
+  assert.equal("metadata" in sanitized, false);
+  const item = sanitized.items.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
 test("sanitizeClientPayload strips metadata from paginated item responses", () => {
   const sanitized = sanitizeClientPayload({
     data: [userMessage],

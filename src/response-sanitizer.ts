@@ -147,14 +147,23 @@ function mergeParsedPage<TItem>(original: unknown, parsed: Page<TItem>): Page<TI
 }
 
 function mergeParsedThread(original: unknown, parsed: Thread): Thread {
-  if (!isRecord(original) || !isDefaultablePageRecord(original.items)) {
+  if (!isRecord(original)) {
     return parsed;
   }
 
-  return {
-    ...parsed,
-    items: mergeParsedPage(original.items, parsed.items),
-  };
+  const thread = isDefaultablePageRecord(original.items)
+    ? {
+        ...parsed,
+        items: mergeParsedPage(original.items, parsed.items),
+      }
+    : parsed;
+
+  if (!("metadata" in original)) {
+    const { metadata: _metadata, ...rest } = thread;
+    return rest as Thread;
+  }
+
+  return thread;
 }
 
 function mergeParsedThreadPage(original: unknown, parsed: Page<Thread>): Page<Thread> {
