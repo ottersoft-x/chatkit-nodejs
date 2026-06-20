@@ -9,8 +9,7 @@ function isPage(value: unknown): value is Page<unknown> {
   return (
     isRecord(value) &&
     Array.isArray(value.data) &&
-    typeof value.has_more === "boolean" &&
-    "after" in value
+    typeof value.has_more === "boolean"
   );
 }
 
@@ -21,7 +20,7 @@ function isAttachment(value: unknown): value is Attachment {
 export function sanitizeAttachment<TAttachment extends Attachment>(
   attachment: TAttachment,
 ): TAttachment {
-  const { metadata: _metadata, ...rest } = attachment;
+  const { metadata: _metadata, ...rest } = structuredClone(attachment);
   return rest as TAttachment;
 }
 

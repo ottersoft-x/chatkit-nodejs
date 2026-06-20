@@ -16,6 +16,19 @@ const attachment: Attachment = {
   metadata: { source: "internal" },
 };
 
+const uploadAttachment: Attachment = {
+  id: "atc_upload",
+  type: "file",
+  name: "upload.txt",
+  mime_type: "text/plain",
+  metadata: { source: "internal" },
+  upload_descriptor: {
+    url: "https://example.com/upload",
+    method: "POST",
+    headers: { authorization: "secret" },
+  },
+};
+
 const userMessage: Extract<ThreadItem, { type: "user_message" }> = {
   id: "msg_user",
   type: "user_message",
@@ -49,6 +62,23 @@ test("sanitizeThreadItem strips attachment metadata without mutating source", ()
     mime_type: "text/plain",
   });
   assert.deepEqual(userMessage.attachments[0]?.metadata, { source: "internal" });
+});
+
+test("sanitizeThreadItem deep clones retained attachment fields", () => {
+  const message: Extract<ThreadItem, { type: "user_message" }> = {
+    ...userMessage,
+    attachments: [uploadAttachment],
+  };
+
+  const sanitized = sanitizeThreadItem(message);
+
+  if (sanitized.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+
+  assert.equal("metadata" in sanitized.attachments[0]!, false);
+  sanitized.attachments[0]!.upload_descriptor!.headers.authorization = "changed";
+  assert.equal(uploadAttachment.upload_descriptor!.headers.authorization, "secret");
 });
 
 test("sanitizeThreadStreamEvent strips metadata from item-bearing events", () => {
@@ -117,4 +147,13 @@ test("sanitizeClientPayload strips metadata from paginated item responses", () =
     has_more: false,
     after: null,
   });
+});
+
+test("sanitizeClientPayload handles pages without after cursor", () => {
+  const sanitized = sanitizeClientPayload({
+    data: [userMessage],
+    has_more: false,
+  });
+
+  assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
 });
