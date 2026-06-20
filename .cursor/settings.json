@@ -1,13 +1,13 @@
 {
   "plugins": {
     "superpowers": {
-      "enabled": false
+      "enabled": true
     },
     "cursor-team-kit": {
       "enabled": true
     },
     "pstack": {
-      "enabled": true
+      "enabled": false
     }
   }
 }

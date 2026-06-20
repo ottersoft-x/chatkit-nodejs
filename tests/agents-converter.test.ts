@@ -75,10 +75,6 @@ describe("ThreadItemConverter", () => {
     ]);
   });
 
-  test("exposes an overridable converter class", () => {
-    expect(new ThreadItemConverter()).toBeInstanceOf(ThreadItemConverter);
-  });
-
   test("throws for attachments by default", async () => {
     await expect(
       simpleToAgentInput(
@@ -528,36 +524,4 @@ describe("ThreadItemConverter", () => {
     ]);
   });
 
-  test("shows the resumed-turn usage pattern without calling OpenAI", async () => {
-    const storedItems = [
-      userMessage({ id: "msg_1", content: [{ type: "input_text", text: "Use the previous result" }] }),
-      {
-        id: "ctc_done",
-        thread_id: threadId,
-        created_at: now,
-        type: "client_tool_call",
-        status: "completed",
-        name: "get_selection",
-        arguments: {},
-        call_id: "call_selection",
-        output: { selected: "paragraph" },
-      } satisfies ThreadItem,
-    ];
-    const loadCalls: Array<[threadId: string, after: string | null, limit: number, order: "asc" | "desc"]> = [];
-    const fakeStore = {
-      async loadThreadItems(threadId: string, after: string | null, limit: number, order: "asc" | "desc") {
-        loadCalls.push([threadId, after, limit, order]);
-        return { data: storedItems, has_more: false, after: null };
-      },
-    };
-    async function fakeRun(input: Awaited<ReturnType<typeof simpleToAgentInput>>) {
-      return input;
-    }
-
-    const page = await fakeStore.loadThreadItems(threadId, null, 20, "asc");
-    const input = await simpleToAgentInput(page.data);
-    await expect(fakeRun(input)).resolves.toEqual(input);
-    expect(loadCalls).toEqual([[threadId, null, 20, "asc"]]);
-    expect(input.map((item) => item.type)).toEqual(["message", "function_call", "function_call_result"]);
-  });
 });

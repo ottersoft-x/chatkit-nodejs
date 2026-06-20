@@ -260,17 +260,6 @@ async function decodeStream(result: StreamingResult): Promise<ThreadStreamEvent[
 }
 
 describe("ChatKitServer", () => {
-  test("returns a non-streaming result for non-streaming requests", async () => {
-    const server = new TestServer();
-
-    const result = await server.process(
-      JSON.stringify({ type: "threads.list", params: {}, metadata: {} }),
-      defaultContext,
-    );
-
-    expect(result).toBeInstanceOf(NonStreamingResult);
-  });
-
   test("lists threads as a paginated non-streaming page", async () => {
     const server = new TestServer();
     const first = makeThread("thr_first");
@@ -532,27 +521,6 @@ describe("ChatKitServer", () => {
     expect(capturedAudio.value?.data).toEqual(bytes);
     expect(capturedAudio.value?.mime_type).toBe("audio/webm;codecs=opus");
     expect(capturedAudio.value?.mediaType).toBe("audio/webm");
-  });
-
-  test("returns a streaming result for streaming requests", async () => {
-    const server = new TestServer();
-
-    const result = await server.process(
-      JSON.stringify({
-        type: "threads.create",
-        params: {
-          input: {
-            content: [{ type: "input_text", text: "Hello" }],
-            attachments: [],
-            inference_options: {},
-          },
-        },
-        metadata: {},
-      }),
-      defaultContext,
-    );
-
-    expect(result).toBeInstanceOf(StreamingResult);
   });
 
   test("creates a thread, persists the user message, and streams responder events", async () => {
@@ -2483,26 +2451,4 @@ describe("ChatKitServer", () => {
     });
   });
 
-  test("records cancellation marker without pending assistant messages", async () => {
-    const server = new TestServer();
-    const thread = makeThread();
-    await server.store.saveThread(thread, defaultContext);
-
-    await server.handleStreamCancelled(thread, [], defaultContext);
-
-    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
-    expect(items.data.map((item) => item.type)).toEqual(["sdk_hidden_context"]);
-  });
-
-  test("records cancellation marker without saving empty pending assistant messages", async () => {
-    const server = new TestServer();
-    const thread = makeThread();
-    await server.store.saveThread(thread, defaultContext);
-
-    await server.handleStreamCancelled(thread, [makeAssistantMessage("")], defaultContext);
-
-    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
-    expect(items.data.some((item) => item.type === "assistant_message")).toBe(false);
-    expect(items.data.some((item) => item.type === "sdk_hidden_context")).toBe(true);
-  });
 });

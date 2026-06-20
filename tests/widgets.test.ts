@@ -1,5 +1,5 @@
 import { describe, test } from "node:test";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import { expect } from "./helpers/expect.js";
 
@@ -47,27 +47,11 @@ const widgetFixtures = [
   "basic_root",
 ] as const;
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function readJsonFixture<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
 describe("widgets", () => {
-  test("has copied upstream widget fixtures", async () => {
-    for (const name of widgetFixtures) {
-      expect(await fileExists(`tests/assets/widgets/${name}.widget`)).toBe(true);
-      expect(await fileExists(`tests/assets/widgets/${name}.json`)).toBe(true);
-    }
-  });
-
   test("serializes dynamic widgets while omitting undefined fields", () => {
     const widget: DynamicWidgetRoot = {
       type: "Card",

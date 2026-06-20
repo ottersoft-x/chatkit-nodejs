@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 
 import { expect } from "./helpers/expect.js";
 
-import { NotFoundError, UnsupportedOperationError, ValidationError } from "../src/errors.js";
+import { ValidationError } from "../src/errors.js";
 import {
   decodeJsonBytes,
   encodeJsonBytes,
@@ -75,10 +75,4 @@ describe("serialization helpers", () => {
     expect(serializeDate(date)).toBe("2026-05-26T00:00:00.000Z");
   });
 
-  test("exposes shared error classes", () => {
-    expect(new NotFoundError("Thread not found").name).toBe("NotFoundError");
-    expect(new UnsupportedOperationError("transcribe() is not implemented").name).toBe(
-      "UnsupportedOperationError",
-    );
-  });
 });

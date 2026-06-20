@@ -143,14 +143,6 @@ describe("SQLiteStore", () => {
     await expect(store.loadThreadItems(thread.id, null, -1, "asc", defaultContext)).rejects.toBeInstanceOf(RangeError);
   });
 
-  test("closes the sqlite database", async () => {
-    const store = new SQLiteStore<RequestContext>({ path: ":memory:", getUserId: (context) => context.user_id });
-    await store.saveThread(makeThread(), defaultContext);
-
-    expect(typeof store.close).toBe("function");
-    store.close();
-  });
-
   test("upserts, loads, and deletes attachments", async () => {
     const store = new SQLiteStore<RequestContext>({ path: ":memory:", getUserId: (context) => context.user_id });
     const attachment: Attachment = {

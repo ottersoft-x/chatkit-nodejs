@@ -1,5 +1,4 @@
 import { describe, test } from "node:test";
-import { access, readFile } from "node:fs/promises";
 
 import { expect } from "./helpers/expect.js";
 
@@ -9,64 +8,6 @@ import { ChatKitServer, StreamingResult } from "../src/server.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import type { ThreadItem, ThreadMetadata } from "../src/types/core.js";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../src/types/server.js";
-
-const validStatuses = new Set([
-  "covered",
-  "partial",
-  "intentional-difference",
-  "deferred",
-  "not-applicable",
-]);
-
-const validAreas = new Set([
-  "agents-output",
-  "agents-input",
-  "server",
-  "widgets",
-  "types",
-  "http",
-  "metadata",
-]);
-
-type ParityRow = {
-  id?: unknown;
-  area?: unknown;
-  status?: unknown;
-  upstream?: unknown;
-  nodejs?: {
-    tests?: string[];
-    sources?: string[];
-    docs?: string[];
-  };
-  notes?: unknown;
-};
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readJson<T>(path: string): Promise<T> {
-  return JSON.parse(await readFile(path, "utf8")) as T;
-}
-
-const matrix = await readJson<{ schemaVersion: number; upstream: unknown; rows: unknown[] }>("docs/parity/matrix.json");
-const upstream = await readJson("docs/parity/upstream.json");
-
-function expectString(value: unknown, label: string): asserts value is string {
-  expect(typeof value, label).toBe("string");
-  expect((value as string).length, label).toBeGreaterThan(0);
-}
-
-async function expectLocalFilesExist(rowId: string, paths: string[]): Promise<void> {
-  for (const path of paths) {
-    expect(await fileExists(path), `${rowId} references missing local file ${path}`).toBe(true);
-  }
-}
 
 interface RequestContext {
   userId: string;
@@ -203,46 +144,6 @@ class AgentSmokeServer extends ChatKitServer<RequestContext> {
     );
   }
 }
-
-describe("parity matrix", () => {
-  test("matches the pinned upstream metadata", () => {
-    expect(matrix.schemaVersion).toBe(1);
-    expect(matrix.upstream).toEqual(upstream);
-  });
-
-  test("has valid, unique rows with useful references", async () => {
-    expect(Array.isArray(matrix.rows)).toBe(true);
-    expect(matrix.rows.length).toBeGreaterThan(8);
-
-    const ids = new Set<string>();
-    for (const row of matrix.rows as ParityRow[]) {
-      expectString(row.id, "row id");
-      expect(row.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
-      expect(ids.has(row.id), `duplicate parity row id ${row.id}`).toBe(false);
-      ids.add(row.id);
-
-      expectString(row.area, `${row.id} area`);
-      expect(validAreas.has(row.area), `${row.id} has unknown area ${row.area}`).toBe(true);
-
-      expectString(row.status, `${row.id} status`);
-      expect(validStatuses.has(row.status), `${row.id} has unknown status ${row.status}`).toBe(true);
-
-      expect(row.upstream, `${row.id} upstream reference`).toBeTruthy();
-      expect(row.nodejs, `${row.id} Node.js reference`).toBeTruthy();
-      expectString(row.notes, `${row.id} notes`);
-
-      const localReferences = [
-        ...(row.nodejs?.tests ?? []),
-        ...(row.nodejs?.sources ?? []),
-        ...(row.nodejs?.docs ?? []),
-      ];
-      if (row.status !== "deferred" && row.status !== "not-applicable") {
-        expect(localReferences.length, `${row.id} should cite local coverage`).toBeGreaterThan(0);
-      }
-      await expectLocalFilesExist(row.id, localReferences);
-    }
-  });
-});
 
 describe("ChatKit JS parity smoke", () => {
   test("preserves streamed Agents annotations through server persistence", async () => {

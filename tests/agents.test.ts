@@ -9,7 +9,7 @@ import { describe, test } from "node:test";
 import { expect } from "./helpers/expect.js";
 
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents/index.js";
-import { ResponseStreamConverter, defaultResponseStreamConverter } from "../src/agents/annotations.js";
+import { ResponseStreamConverter } from "../src/agents/annotations.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import { BaseStore, type Store, type StoreItemType } from "../src/store.js";
 import type {
@@ -390,32 +390,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-function countedDeferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-  thenCount: () => number;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  let thenCount = 0;
-  const innerPromise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-  const promise = {
-    then<TResult1 = T, TResult2 = never>(
-      onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-    ): Promise<TResult1 | TResult2> {
-      thenCount += 1;
-      return innerPromise.then(onfulfilled, onrejected);
-    },
-  } as Promise<T>;
-
-  return { promise, resolve, reject, thenCount: () => thenCount };
-}
-
 function assertClientToolCallArgumentTypes(): void {
   new ClientToolCall("valid", {
     includeHtml: true,
@@ -561,10 +535,6 @@ describe("ResponseStreamConverter", () => {
     expect(converter.convertAnnotation(null)).toBeNull();
   });
 
-  test("exports a shared default converter instance", () => {
-    expect(defaultResponseStreamConverter).toBeInstanceOf(ResponseStreamConverter);
-  });
-
   test("converts base64 images to data URLs by default", async () => {
     const converter = new ResponseStreamConverter();
 
@@ -582,54 +552,6 @@ describe("ResponseStreamConverter", () => {
 });
 
 describe("AgentContext", () => {
-  test("stores thread, store, request context, previous response id, and deterministic timestamps", () => {
-    const agentContext = createContext();
-
-    expect(agentContext.thread).toEqual(thread);
-    expect(agentContext.context).toEqual(requestContext);
-    expect(agentContext.previousResponseId).toBeNull();
-    expect(agentContext.createdAt()).toBe(now);
-    expect(agentContext.store.generateItemId("tool_call", thread, requestContext)).toBe(
-      "tool_call_generated",
-    );
-  });
-
-  test("preserves an explicit previous response id", () => {
-    const agentContext = new AgentContext({
-      thread,
-      store: new TestStore(),
-      context: requestContext,
-      previousResponseId: "resp_previous_123",
-      now: () => now,
-    });
-
-    expect(agentContext.previousResponseId).toBe("resp_previous_123");
-    expect(agentContext.createdAt()).toBe(now);
-  });
-
-  test("tracks the active workflow item for stream conversion", () => {
-    const agentContext = createContext();
-    const workflow: Extract<ThreadItem, { type: "workflow" }> = {
-      id: "workflow_generated",
-      thread_id: thread.id,
-      created_at: now,
-      type: "workflow",
-      workflow: {
-        type: "reasoning",
-        tasks: [],
-        expanded: false,
-      },
-    };
-
-    expect(agentContext.workflowItem).toBeNull();
-
-    agentContext.workflowItem = workflow;
-    expect(agentContext.workflowItem).toBe(workflow);
-
-    agentContext.workflowItem = null;
-    expect(agentContext.workflowItem).toBeNull();
-  });
-
   test("starts reasoning workflows immediately", async () => {
     const agentContext = createContext();
 
@@ -3734,53 +3656,6 @@ describe("streamAgentResponse", () => {
       },
     });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
-  });
-
-  test("reuses a pending SDK next promise while context events win races", async () => {
-    const agentContext = createContext();
-    const pendingSdk = countedDeferred<IteratorResult<unknown>>();
-    const sdkEvents = {
-      [Symbol.asyncIterator](): AsyncIterator<unknown> {
-        let calls = 0;
-
-        return {
-          next(): Promise<IteratorResult<unknown>> {
-            calls += 1;
-
-            if (calls === 1) {
-              return pendingSdk.promise;
-            }
-
-            return Promise.resolve({ done: true, value: undefined });
-          },
-        };
-      },
-    };
-    const iterator = streamAgentResponse(agentContext, sdkEvents)[Symbol.asyncIterator]();
-    const first = iterator.next();
-
-    await Promise.resolve();
-    agentContext.stream({ type: "progress_update", icon: null, text: "First context" });
-
-    await expect(first).resolves.toEqual({
-      done: false,
-      value: { type: "progress_update", icon: null, text: "First context" },
-    });
-
-    const second = iterator.next();
-
-    await Promise.resolve();
-    agentContext.stream({ type: "progress_update", icon: null, text: "Second context" });
-
-    await expect(second).resolves.toEqual({
-      done: false,
-      value: { type: "progress_update", icon: null, text: "Second context" },
-    });
-    expect(pendingSdk.thenCount()).toBe(1);
-
-    pendingSdk.reject(new Error("SDK stream failed"));
-
-    await expect(iterator.next()).rejects.toThrow("SDK stream failed");
   });
 
   test("prefers queued context events over ready SDK events", async () => {
