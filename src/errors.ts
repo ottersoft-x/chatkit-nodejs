@@ -18,7 +18,7 @@ export class ValidationError extends ChatKitError {
   }
 }
 
-export type StreamErrorCode = "stream.error" | "custom" | (string & {});
+export type StreamErrorCode = "stream.error" | (string & {});
 
 export interface StreamErrorOptions {
   allowRetry?: boolean;
