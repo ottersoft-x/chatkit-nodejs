@@ -691,6 +691,9 @@ export abstract class ChatKitServer<TContext = unknown> {
           yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
         }
       }
+      if (runtime.signal.aborted) {
+        throw new StreamCancelledError();
+      }
       completedNormally = true;
     } catch (error) {
       if (error instanceof StreamCancelledError) {

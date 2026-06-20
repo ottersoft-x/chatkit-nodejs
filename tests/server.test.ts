@@ -1672,6 +1672,62 @@ describe("ChatKitServer", () => {
     expect(items.data.some((item) => item.type === "sdk_hidden_context")).toBe(true);
   });
 
+  test("clean return after explicit runtime abort persists cancellation state", async () => {
+    const controller = new AbortController();
+    const server = new TestServer(async function* (thread, _input, _context, runtime) {
+      const assistant = { ...makeAssistantMessage(""), id: "msg_clean_abort", thread_id: thread.id };
+      yield { type: "thread.item.added", item: assistant };
+      yield {
+        type: "thread.item.updated",
+        item_id: assistant.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "Partial before clean abort",
+        },
+      };
+      controller.abort();
+      if (runtime.signal.aborted) {
+        return;
+      }
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+      {
+        runtime: {
+          signal: controller.signal,
+          supportsExplicitCancel: true,
+        },
+      },
+    )) as StreamingResult;
+
+    await expect(decodeStream(result)).rejects.toBeInstanceOf(StreamCancelledError);
+    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
+    expect(items.data.find((item) => item.id === "msg_clean_abort")).toMatchObject({
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Partial before clean abort", annotations: [] }],
+    });
+    expect(items.data.find((item) => item.type === "sdk_hidden_context")).toMatchObject({
+      type: "sdk_hidden_context",
+      content: "The user cancelled the stream. Stop responding to the prior request.",
+    });
+  });
+
   test("persists pending assistant state when the stream iterator is closed by the client", async () => {
     const server = new TestServer(async function* (thread) {
       const assistant = { ...makeAssistantMessage(""), id: "msg_iterator_pending", thread_id: thread.id };
