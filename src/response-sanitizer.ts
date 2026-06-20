@@ -1,6 +1,7 @@
 import { omitUndefinedDeep } from "./serialization.js";
 import { AttachmentSchema, PageSchema, ThreadItemSchema, type Attachment, type Page, type ThreadItem } from "./types/core.js";
 import { ThreadSchema, ThreadStreamEventSchema, type Thread, type ThreadStreamEvent } from "./types/server.js";
+import type { z } from "zod";
 
 const ThreadItemPageSchema = PageSchema(ThreadItemSchema);
 const ThreadPageSchema = PageSchema(ThreadSchema);
@@ -14,6 +15,20 @@ type ThreadBearingEvent = Extract<
   ThreadStreamEvent,
   { type: "thread.created" | "thread.updated" }
 >;
+export type AttachmentPayloadInput = z.input<typeof AttachmentSchema>;
+export type ThreadItemPayloadInput = z.input<typeof ThreadItemSchema>;
+export type ThreadPayloadInput = z.input<typeof ThreadSchema>;
+export type ThreadStreamEventPayloadInput = z.input<typeof ThreadStreamEventSchema>;
+export type ThreadItemPagePayloadInput = {
+  data: ThreadItemPayloadInput[];
+  has_more: boolean;
+  after?: string | null | undefined;
+};
+export type ThreadPagePayloadInput = {
+  data: ThreadPayloadInput[];
+  has_more: boolean;
+  after?: string | null | undefined;
+};
 
 export type ClientAttachment<TAttachment extends Attachment = Attachment> =
   TAttachment extends Attachment ? Omit<TAttachment, "metadata"> : never;
@@ -39,20 +54,22 @@ export type ClientThreadStreamEvent<TEvent extends ThreadStreamEvent = ThreadStr
       : TEvent;
 
 export type ClientPayload<T> =
-  T extends Attachment
+  T extends AttachmentPayloadInput
     ? ClientAttachment
-    : T extends ThreadItem
+    : T extends ThreadItemPayloadInput
       ? ClientThreadItem
-      : T extends Thread
+      : T extends ThreadPayloadInput
         ? ClientThread
-        : T extends ThreadStreamEvent
+        : T extends ThreadStreamEventPayloadInput
           ? ClientThreadStreamEvent
-          : T extends Page<infer TItem>
-            ? TItem extends ThreadItem
-              ? ClientPage<TItem, ClientThreadItem>
-              : TItem extends Thread
-                ? ClientPage<TItem, ClientThread>
-                : T
+          : T extends { data: readonly (infer TItem)[]; has_more: boolean; after?: string | null | undefined }
+            ? [TItem] extends [never]
+              ? T
+              : T extends ThreadItemPagePayloadInput
+                ? ClientPage<ThreadItem, ClientThreadItem>
+                : T extends ThreadPagePayloadInput
+                  ? ClientPage<Thread, ClientThread>
+                  : T
             : T;
 
 function jsonClone<T>(value: T): T {
@@ -77,6 +94,46 @@ function isPageRecord(value: unknown): value is Page<unknown> {
       value.after === null ||
       value.after === undefined)
   );
+}
+
+function mergeParsedPage<TItem>(original: unknown, parsed: Page<TItem>): Page<TItem> {
+  if (!isPageRecord(original)) {
+    return parsed;
+  }
+
+  return {
+    ...jsonClone(original as Page<unknown> & Record<string, unknown>),
+    ...parsed,
+  };
+}
+
+function mergeParsedThread(original: unknown, parsed: Thread): Thread {
+  if (!isRecord(original) || !isPageRecord(original.items)) {
+    return parsed;
+  }
+
+  return {
+    ...parsed,
+    items: mergeParsedPage(original.items, parsed.items),
+  };
+}
+
+function mergeParsedThreadStreamEvent(
+  original: unknown,
+  parsed: ThreadStreamEvent,
+): ThreadStreamEvent {
+  if (!isRecord(original)) {
+    return parsed;
+  }
+
+  if ((parsed.type === "thread.created" || parsed.type === "thread.updated") && isRecord(original.thread)) {
+    return {
+      ...parsed,
+      thread: mergeParsedThread(original.thread, parsed.thread),
+    };
+  }
+
+  return parsed;
 }
 
 export function sanitizeAttachment<TAttachment extends Attachment>(
@@ -142,24 +199,12 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
 
   const threadItemPage = isPageRecord(value) ? ThreadItemPageSchema.safeParse(value) : null;
   if (threadItemPage?.success) {
-    return sanitizePage(
-      {
-        ...jsonClone(value as Page<unknown> & Record<string, unknown>),
-        ...threadItemPage.data,
-      },
-      sanitizeThreadItem,
-    ) as ClientPayload<T>;
+    return sanitizePage(mergeParsedPage(value, threadItemPage.data), sanitizeThreadItem) as ClientPayload<T>;
   }
 
   const threadPage = isPageRecord(value) ? ThreadPageSchema.safeParse(value) : null;
   if (threadPage?.success) {
-    return sanitizePage(
-      {
-        ...jsonClone(value as Page<unknown> & Record<string, unknown>),
-        ...threadPage.data,
-      },
-      sanitizeThreadResponse,
-    ) as ClientPayload<T>;
+    return sanitizePage(mergeParsedPage(value, threadPage.data), sanitizeThreadResponse) as ClientPayload<T>;
   }
 
   const threadItem = ThreadItemSchema.safeParse(value);
@@ -169,12 +214,12 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
 
   const thread = ThreadSchema.safeParse(value);
   if (thread.success) {
-    return sanitizeThreadResponse(thread.data) as ClientPayload<T>;
+    return sanitizeThreadResponse(mergeParsedThread(value, thread.data)) as ClientPayload<T>;
   }
 
   const event = ThreadStreamEventSchema.safeParse(value);
   if (event.success) {
-    return sanitizeThreadStreamEvent(event.data) as ClientPayload<T>;
+    return sanitizeThreadStreamEvent(mergeParsedThreadStreamEvent(value, event.data)) as ClientPayload<T>;
   }
 
   return jsonClone(value) as ClientPayload<T>;

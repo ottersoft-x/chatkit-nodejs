@@ -6,7 +6,17 @@ import {
   sanitizeThreadItem,
   sanitizeThreadStreamEvent,
 } from "../src/response-sanitizer.js";
+import type {
+  ClientPage,
+  ClientThreadItem,
+  ClientThreadStreamEvent,
+  ThreadItemPagePayloadInput,
+  ThreadItemPayloadInput,
+  ThreadStreamEventPayloadInput,
+} from "../src/response-sanitizer.js";
 import type { Attachment, Thread, ThreadItem, ThreadStreamEvent } from "../src/index.js";
+
+function expectType<T>(_value: T): void {}
 
 const attachment: Attachment = {
   id: "atc_secret",
@@ -178,21 +188,23 @@ test("sanitizeClientPayload handles pages with undefined after cursor", () => {
 });
 
 test("sanitizeClientPayload uses parsed item defaults before sanitizing", () => {
-  const sanitized = sanitizeClientPayload({
+  const input: ThreadItemPayloadInput = {
     id: "msg_defaulted",
     type: "user_message",
     thread_id: "thr_test",
     created_at: "2026-06-20T00:00:00.000Z",
     content: [{ type: "input_text", text: "hello" }],
-  }) as Extract<ThreadItem, { type: "user_message" }>;
+  };
+  const sanitized = sanitizeClientPayload(input);
 
+  expectType<ClientThreadItem>(sanitized);
   assert.equal(sanitized.type, "user_message");
   assert.deepEqual(sanitized.attachments, []);
   assert.deepEqual(sanitized.inference_options, {});
 });
 
 test("sanitizeClientPayload uses parsed item defaults inside pages", () => {
-  const sanitized = sanitizeClientPayload({
+  const input: ThreadItemPagePayloadInput = {
     data: [
       {
         id: "msg_defaulted",
@@ -203,8 +215,10 @@ test("sanitizeClientPayload uses parsed item defaults inside pages", () => {
       },
     ],
     has_more: false,
-  }) as unknown as { data: Array<Extract<ThreadItem, { type: "user_message" }>> };
+  };
+  const sanitized = sanitizeClientPayload(input);
 
+  expectType<ClientPage<ThreadItem, ClientThreadItem>>(sanitized);
   const item = sanitized.data[0];
   assert.equal(item?.type, "user_message");
   if (!item || item.type !== "user_message") {
@@ -215,7 +229,7 @@ test("sanitizeClientPayload uses parsed item defaults inside pages", () => {
 });
 
 test("sanitizeClientPayload uses parsed item defaults inside events", () => {
-  const sanitized = sanitizeClientPayload({
+  const input: ThreadStreamEventPayloadInput = {
     type: "thread.item.done",
     item: {
       id: "msg_defaulted",
@@ -224,14 +238,58 @@ test("sanitizeClientPayload uses parsed item defaults inside events", () => {
       created_at: "2026-06-20T00:00:00.000Z",
       content: [{ type: "input_text", text: "hello" }],
     },
-  }) as Extract<ThreadStreamEvent, { type: "thread.item.done" }>;
+  };
+  const sanitized = sanitizeClientPayload(input);
 
+  expectType<ClientThreadStreamEvent>(sanitized);
   assert.equal(sanitized.type, "thread.item.done");
   if (sanitized.type !== "thread.item.done" || sanitized.item.type !== "user_message") {
     throw new Error("Expected user message event");
   }
   assert.deepEqual(sanitized.item.attachments, []);
   assert.deepEqual(sanitized.item.inference_options, {});
+});
+
+test("sanitizeClientPayload preserves nested thread item page fields", () => {
+  const value = {
+    ...threadResponse,
+    items: {
+      ...threadResponse.items,
+      metadata: { keep: true },
+    },
+  };
+  const sanitized = sanitizeClientPayload(value);
+  const item = sanitized.items.data[0];
+
+  assert.deepEqual((sanitized.items as typeof sanitized.items & { metadata?: unknown }).metadata, {
+    keep: true,
+  });
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
+test("sanitizeClientPayload preserves nested event thread item page fields", () => {
+  const value = {
+    type: "thread.created",
+    thread: {
+      ...threadResponse,
+      items: {
+        ...threadResponse.items,
+        metadata: { keep: true },
+      },
+    },
+  };
+  const sanitized = sanitizeClientPayload(value);
+
+  assert.equal(sanitized.type, "thread.created");
+  if (sanitized.type !== "thread.created") {
+    throw new Error("Expected thread.created event");
+  }
+  assert.deepEqual((sanitized.thread.items as typeof sanitized.thread.items & { metadata?: unknown }).metadata, {
+    keep: true,
+  });
 });
 
 test("sanitizeClientPayload preserves attachment metadata on unsupported page types", () => {
