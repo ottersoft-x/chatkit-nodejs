@@ -40,18 +40,18 @@ export type ClientThreadStreamEvent<TEvent extends ThreadStreamEvent = ThreadStr
 
 export type ClientPayload<T> =
   T extends Attachment
-    ? ClientAttachment<T>
+    ? ClientAttachment
     : T extends ThreadItem
-      ? ClientThreadItem<T>
+      ? ClientThreadItem
       : T extends Thread
-        ? ClientThread<T>
+        ? ClientThread
         : T extends ThreadStreamEvent
-          ? ClientThreadStreamEvent<T>
+          ? ClientThreadStreamEvent
           : T extends Page<infer TItem>
             ? TItem extends ThreadItem
-              ? ClientPage<TItem, ClientThreadItem<TItem>>
+              ? ClientPage<TItem, ClientThreadItem>
               : TItem extends Thread
-                ? ClientPage<TItem, ClientThread<TItem>>
+                ? ClientPage<TItem, ClientThread>
                 : T
             : T;
 
@@ -111,7 +111,7 @@ export function sanitizePage<TItem, TClientItem>(
   sanitizeData: (value: TItem) => TClientItem,
 ): ClientPage<TItem, TClientItem> {
   return {
-    ...jsonClone(page),
+    ...jsonClone(page as Page<TItem> & Record<string, unknown>),
     data: page.data.map((item) => sanitizeData(item)),
   };
 }
@@ -142,12 +142,24 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
 
   const threadItemPage = isPageRecord(value) ? ThreadItemPageSchema.safeParse(value) : null;
   if (threadItemPage?.success) {
-    return sanitizePage(threadItemPage.data, sanitizeThreadItem) as ClientPayload<T>;
+    return sanitizePage(
+      {
+        ...jsonClone(value as Page<unknown> & Record<string, unknown>),
+        ...threadItemPage.data,
+      },
+      sanitizeThreadItem,
+    ) as ClientPayload<T>;
   }
 
   const threadPage = isPageRecord(value) ? ThreadPageSchema.safeParse(value) : null;
   if (threadPage?.success) {
-    return sanitizePage(threadPage.data, sanitizeThreadResponse) as ClientPayload<T>;
+    return sanitizePage(
+      {
+        ...jsonClone(value as Page<unknown> & Record<string, unknown>),
+        ...threadPage.data,
+      },
+      sanitizeThreadResponse,
+    ) as ClientPayload<T>;
   }
 
   const threadItem = ThreadItemSchema.safeParse(value);

@@ -156,7 +156,11 @@ test("sanitizeClientPayload handles pages without after cursor", () => {
     has_more: false,
   });
 
-  assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
+  const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
 });
 
 test("sanitizeClientPayload handles pages with undefined after cursor", () => {
@@ -166,7 +170,11 @@ test("sanitizeClientPayload handles pages with undefined after cursor", () => {
     after: undefined,
   });
 
-  assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
+  const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
 });
 
 test("sanitizeClientPayload uses parsed item defaults before sanitizing", () => {
@@ -230,6 +238,16 @@ test("sanitizeClientPayload preserves attachment metadata on unsupported page ty
   const value = {
     data: [attachment],
     has_more: false,
+  };
+
+  assert.deepEqual(sanitizeClientPayload(value), value);
+});
+
+test("sanitizeClientPayload preserves page-level fields on empty pages", () => {
+  const value = {
+    data: [],
+    has_more: false,
+    metadata: { keep: true },
   };
 
   assert.deepEqual(sanitizeClientPayload(value), value);
