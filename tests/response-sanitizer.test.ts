@@ -159,6 +159,72 @@ test("sanitizeClientPayload handles pages without after cursor", () => {
   assert.equal("metadata" in sanitized.data[0]!.attachments[0]!, false);
 });
 
+test("sanitizeClientPayload uses parsed item defaults before sanitizing", () => {
+  const sanitized = sanitizeClientPayload({
+    id: "msg_defaulted",
+    type: "user_message",
+    thread_id: "thr_test",
+    created_at: "2026-06-20T00:00:00.000Z",
+    content: [{ type: "input_text", text: "hello" }],
+  }) as Extract<ThreadItem, { type: "user_message" }>;
+
+  assert.equal(sanitized.type, "user_message");
+  assert.deepEqual(sanitized.attachments, []);
+  assert.deepEqual(sanitized.inference_options, {});
+});
+
+test("sanitizeClientPayload uses parsed item defaults inside pages", () => {
+  const sanitized = sanitizeClientPayload({
+    data: [
+      {
+        id: "msg_defaulted",
+        type: "user_message",
+        thread_id: "thr_test",
+        created_at: "2026-06-20T00:00:00.000Z",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+    ],
+    has_more: false,
+  }) as unknown as { data: Array<Extract<ThreadItem, { type: "user_message" }>> };
+
+  const item = sanitized.data[0];
+  assert.equal(item?.type, "user_message");
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.deepEqual(item.attachments, []);
+  assert.deepEqual(item.inference_options, {});
+});
+
+test("sanitizeClientPayload uses parsed item defaults inside events", () => {
+  const sanitized = sanitizeClientPayload({
+    type: "thread.item.done",
+    item: {
+      id: "msg_defaulted",
+      type: "user_message",
+      thread_id: "thr_test",
+      created_at: "2026-06-20T00:00:00.000Z",
+      content: [{ type: "input_text", text: "hello" }],
+    },
+  }) as Extract<ThreadStreamEvent, { type: "thread.item.done" }>;
+
+  assert.equal(sanitized.type, "thread.item.done");
+  if (sanitized.type !== "thread.item.done" || sanitized.item.type !== "user_message") {
+    throw new Error("Expected user message event");
+  }
+  assert.deepEqual(sanitized.item.attachments, []);
+  assert.deepEqual(sanitized.item.inference_options, {});
+});
+
+test("sanitizeClientPayload preserves attachment metadata on unsupported page types", () => {
+  const value = {
+    data: [attachment],
+    has_more: false,
+  };
+
+  assert.deepEqual(sanitizeClientPayload(value), value);
+});
+
 test("sanitizeClientPayload leaves invalid typed records unchanged", () => {
   assert.deepEqual(sanitizeClientPayload({ type: "user_message", metadata: { keep: true } }), {
     type: "user_message",

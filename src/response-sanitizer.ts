@@ -48,7 +48,11 @@ export type ClientPayload<T> =
         : T extends ThreadStreamEvent
           ? ClientThreadStreamEvent<T>
           : T extends Page<infer TItem>
-            ? ClientPage<TItem, ClientPayload<TItem>>
+            ? TItem extends ThreadItem
+              ? ClientPage<TItem, ClientThreadItem<TItem>>
+              : TItem extends Thread
+                ? ClientPage<TItem, ClientThread<TItem>>
+                : T
             : T;
 
 function jsonClone<T>(value: T): T {
@@ -130,32 +134,32 @@ export function sanitizeThreadStreamEvent<TEvent extends ThreadStreamEvent>(
 export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
   const attachment = AttachmentSchema.safeParse(value);
   if (attachment.success) {
-    return sanitizeAttachment(value as Attachment) as ClientPayload<T>;
+    return sanitizeAttachment(attachment.data) as ClientPayload<T>;
   }
 
   const threadItemPage = isPageRecord(value) ? ThreadItemPageSchema.safeParse(value) : null;
   if (threadItemPage?.success) {
-    return sanitizePage(value as Page<ThreadItem>, sanitizeThreadItem) as ClientPayload<T>;
+    return sanitizePage(threadItemPage.data, sanitizeThreadItem) as ClientPayload<T>;
   }
 
   const threadPage = isPageRecord(value) ? ThreadPageSchema.safeParse(value) : null;
   if (threadPage?.success) {
-    return sanitizePage(value as Page<Thread>, sanitizeThreadResponse) as ClientPayload<T>;
+    return sanitizePage(threadPage.data, sanitizeThreadResponse) as ClientPayload<T>;
   }
 
   const threadItem = ThreadItemSchema.safeParse(value);
   if (threadItem.success) {
-    return sanitizeThreadItem(value as ThreadItem) as ClientPayload<T>;
+    return sanitizeThreadItem(threadItem.data) as ClientPayload<T>;
   }
 
   const thread = ThreadSchema.safeParse(value);
   if (thread.success) {
-    return sanitizeThreadResponse(value as Thread) as ClientPayload<T>;
+    return sanitizeThreadResponse(thread.data) as ClientPayload<T>;
   }
 
   const event = ThreadStreamEventSchema.safeParse(value);
   if (event.success) {
-    return sanitizeThreadStreamEvent(value as ThreadStreamEvent) as ClientPayload<T>;
+    return sanitizeThreadStreamEvent(event.data) as ClientPayload<T>;
   }
 
   return jsonClone(value) as ClientPayload<T>;
