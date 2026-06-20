@@ -191,13 +191,15 @@ test("sanitizeClientPayload handles pages with undefined after cursor", () => {
 });
 
 test("sanitizeClientPayload handles pages with omitted has_more", () => {
-  const input: ThreadItemPagePayloadInput = {
+  const input = {
     data: [userMessage],
+    metadata: { keep: true },
   };
   const sanitized = sanitizeClientPayload(input);
 
-  expectType<ClientPage<ThreadItemPagePayloadInput, ClientThreadItem>>(sanitized);
+  expectType<ClientPage<typeof input, ClientThreadItem>>(sanitized);
   assert.equal(sanitized.has_more, false);
+  assert.deepEqual(sanitized.metadata, { keep: true });
   const item = sanitized.data[0];
   if (!item || item.type !== "user_message") {
     throw new Error("Expected user message");
@@ -269,12 +271,15 @@ test("sanitizeClientPayload uses parsed item defaults inside events", () => {
 });
 
 test("sanitizeClientPayload strips metadata from sync custom action response items", () => {
-  const input: SyncCustomActionResponsePayloadInput = {
+  const input: SyncCustomActionResponsePayloadInput & { custom: boolean } = {
     updated_item: userMessage,
+    custom: true,
   };
   const sanitized = sanitizeClientPayload(input);
 
   expectType<ClientSyncCustomActionResponse>(sanitized);
+  // @ts-expect-error Sync custom action response output is canonical and does not promise extra fields.
+  sanitized.custom;
   const item = sanitized.updated_item;
   if (!item || item.type !== "user_message") {
     throw new Error("Expected user message");

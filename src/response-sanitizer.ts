@@ -39,6 +39,10 @@ export type ThreadPagePayloadInput = {
   has_more?: boolean | undefined;
   after?: string | null | undefined;
 };
+type PagePayloadLike = {
+  data: readonly unknown[];
+  has_more?: boolean | undefined;
+};
 
 export type ClientAttachment<TAttachment extends Attachment = Attachment> =
   TAttachment extends Attachment ? Omit<TAttachment, "metadata"> : never;
@@ -49,8 +53,8 @@ export type ClientThreadItem<TItem extends ThreadItem = ThreadItem> =
     : TItem;
 
 export type ClientPage<TPageOrItem, TClientItem = TPageOrItem> =
-  TPageOrItem extends Page<unknown>
-    ? Omit<TPageOrItem, "data"> & { data: TClientItem[] }
+  TPageOrItem extends PagePayloadLike
+    ? Omit<TPageOrItem, "data" | "has_more"> & { data: TClientItem[]; has_more: boolean }
     : Omit<Page<TPageOrItem>, "data"> & { data: TClientItem[] };
 
 export type ClientThread<TThread extends Thread = Thread> = Omit<TThread, "items"> & {
@@ -64,9 +68,7 @@ export type ClientThreadStreamEvent<TEvent extends ThreadStreamEvent = ThreadStr
       ? Omit<TEvent, "thread"> & { thread: ClientThread<TEvent["thread"]> }
       : TEvent;
 
-export type ClientSyncCustomActionResponse<
-  TResponse extends { updated_item?: ThreadItemPayloadInput | null | undefined } = SyncCustomActionResponse,
-> = Omit<TResponse, "updated_item"> & {
+export type ClientSyncCustomActionResponse = {
   updated_item?: ClientThreadItem | null;
 };
 
@@ -80,7 +82,7 @@ export type ClientPayload<T> =
         : T extends ThreadStreamEventPayloadInput
           ? ClientThreadStreamEvent
           : T extends SyncCustomActionResponsePayloadInput
-            ? ClientSyncCustomActionResponse<T>
+            ? ClientSyncCustomActionResponse
             : T extends { data: readonly (infer TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
               ? [TItem] extends [never]
                 ? T
@@ -229,16 +231,16 @@ export function sanitizeThreadStreamEvent<TEvent extends ThreadStreamEvent>(
 
 export function sanitizeSyncCustomActionResponse<TResponse extends SyncCustomActionResponse>(
   response: TResponse,
-): ClientSyncCustomActionResponse<TResponse> {
+): ClientSyncCustomActionResponse {
   const clone = jsonClone(response as TResponse & Record<string, unknown>);
   if (!response.updated_item) {
-    return clone as ClientSyncCustomActionResponse<TResponse>;
+    return clone as ClientSyncCustomActionResponse;
   }
 
   return {
     ...clone,
     updated_item: sanitizeThreadItem(response.updated_item),
-  } as ClientSyncCustomActionResponse<TResponse>;
+  } as ClientSyncCustomActionResponse;
 }
 
 export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
