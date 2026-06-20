@@ -276,12 +276,17 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
       }
     } finally {
       if (record.sourceIterator && terminalStatus !== "completed") {
-        try {
-          await returnIterator(record.sourceIterator);
-        } catch (error) {
-          if (!(error instanceof StreamCancelledError || record.controller.signal.aborted)) {
-            terminalStatus = "failed";
-            terminalError = error;
+        const sourceReturn = returnIterator(record.sourceIterator);
+        if (terminalStatus === "cancelled" || record.controller.signal.aborted) {
+          void sourceReturn.catch(() => undefined);
+        } else {
+          try {
+            await sourceReturn;
+          } catch (error) {
+            if (!(error instanceof StreamCancelledError || record.controller.signal.aborted)) {
+              terminalStatus = "failed";
+              terminalError = error;
+            }
           }
         }
       }

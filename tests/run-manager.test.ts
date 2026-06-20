@@ -163,3 +163,22 @@ test("cancelRun is scoped and idempotent", async () => {
     { status: "not_found" },
   );
 });
+
+test("cancelRun does not wait for async generator return behind pending next", async () => {
+  const manager = new ResponseRunManager<undefined, string>();
+  const run = await manager.startRun({
+    context: undefined,
+    source: async function* () {
+      await new Promise<void>(() => {});
+      yield "late";
+    },
+  });
+
+  const result = await Promise.race([
+    manager.cancelRun({ runId: run.runId, context: undefined }),
+    new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+  ]);
+
+  assert.deepEqual(result, { status: "cancelled" });
+  assert.equal(run.status, "cancelled");
+});
