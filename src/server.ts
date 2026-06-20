@@ -308,6 +308,12 @@ export abstract class ChatKitServer<TContext = unknown> {
     }
   }
 
+  serializeStreamingEventsForHandler(
+    events: AsyncIterable<ThreadStreamEvent>,
+  ): AsyncIterable<Uint8Array> {
+    return this.serializeStreamingEvents(events);
+  }
+
   protected async *processStreamingEvents(
     request: StreamingRequest,
     context: TContext,
