@@ -63,12 +63,29 @@ export class NonStreamingResult {
 }
 
 export class StreamingEventResult {
+  private consumed = false;
+
   constructor(
     private readonly createEvents: (runtime: ChatKitStreamRuntime) => AsyncIterable<ThreadStreamEvent>,
   ) {}
 
   stream(runtime: ChatKitStreamRuntime = defaultChatKitStreamRuntime()): AsyncIterable<ThreadStreamEvent> {
-    return this.createEvents(runtime);
+    if (this.consumed) {
+      return this.consumedStream();
+    }
+
+    this.consumed = true;
+    return this.sanitizeEvents(this.createEvents(runtime));
+  }
+
+  private async *consumedStream(): AsyncIterable<ThreadStreamEvent> {
+    throw new Error("StreamingEventResult can only be streamed once.");
+  }
+
+  private async *sanitizeEvents(events: AsyncIterable<ThreadStreamEvent>): AsyncIterable<ThreadStreamEvent> {
+    for await (const event of events) {
+      yield sanitizeThreadStreamEvent(event);
+    }
   }
 }
 
@@ -584,19 +601,12 @@ export abstract class ChatKitServer<TContext = unknown> {
     runtime: ChatKitStreamRuntime,
     stream: () => AsyncIterable<ThreadStreamEvent>,
   ): AsyncIterable<ThreadStreamEvent> {
-    const streamOptions = this.getStreamOptions(thread, context, runtime);
-    yield {
-      type: "stream_options",
-      stream_options: {
-        ...streamOptions,
-        allow_cancel: runtime.supportsExplicitCancel && streamOptions.allow_cancel,
-      },
-    };
     let lastThread = structuredClone(thread);
     const pendingItems = new Map<string, ThreadItem>();
     const updatedPendingItemIds = new Set<string>();
     let completedNormally = false;
     let cancellationHandled = false;
+    let terminalEvent: ThreadStreamEvent | null = null;
     const saveThreadIfChanged = async (): Promise<boolean> => {
       if (!this.hasThreadChanged(thread, lastThread)) {
         return false;
@@ -608,6 +618,15 @@ export abstract class ChatKitServer<TContext = unknown> {
     };
 
     try {
+      const streamOptions = this.getStreamOptions(thread, context, runtime);
+      yield {
+        type: "stream_options",
+        stream_options: {
+          ...streamOptions,
+          allow_cancel: runtime.supportsExplicitCancel && streamOptions.allow_cancel,
+        },
+      };
+
       for await (const rawEvent of stream()) {
         const event = ThreadStreamEventSchema.parse(rawEvent);
         let suppressClientEvent = false;
@@ -679,32 +698,32 @@ export abstract class ChatKitServer<TContext = unknown> {
 
       if (error instanceof CustomStreamError) {
         completedNormally = true;
-        yield {
+        terminalEvent = {
           type: "error",
           code: "custom",
           message: error.message,
           allow_retry: error.allowRetry,
         };
-        return;
-      }
-
-      if (error instanceof StreamError) {
+      } else if (error instanceof StreamError) {
         completedNormally = true;
-        yield {
+        terminalEvent = {
           type: "error",
           code: error.code,
           allow_retry: error.allowRetry,
         };
-        return;
+      } else {
+        completedNormally = true;
+        terminalEvent = { type: "error", code: "stream.error", allow_retry: true };
       }
-
-      completedNormally = true;
-      yield { type: "error", code: "stream.error", allow_retry: true };
     } finally {
       if (!completedNormally && !cancellationHandled) {
         await saveThreadIfChanged();
         await this.handleStreamCancelled(thread, [...pendingItems.values()], context);
       }
+    }
+
+    if (terminalEvent) {
+      yield terminalEvent;
     }
 
     if (await saveThreadIfChanged()) {

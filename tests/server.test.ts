@@ -8,6 +8,7 @@ import {
   ChatKitServer,
   NonStreamingResult,
   StreamCancelledError,
+  StreamingEventResult,
   StreamingResult,
   type ChatKitStreamRuntime,
 } from "../src/server.js";
@@ -18,6 +19,7 @@ import {
   DEFAULT_PAGE_SIZE,
   type AudioInput,
   type FeedbackKind,
+  type StreamOptions,
   type SyncCustomActionResponse,
   type ThreadStreamEvent,
   type TranscriptionResult,
@@ -270,6 +272,15 @@ async function decodeStream(result: StreamingResult): Promise<ThreadStreamEvent[
   }
 
   return events;
+}
+
+async function collectEvents(events: AsyncIterable<ThreadStreamEvent>): Promise<ThreadStreamEvent[]> {
+  const collected: ThreadStreamEvent[] = [];
+  for await (const event of events) {
+    collected.push(event);
+  }
+
+  return collected;
 }
 
 describe("ChatKitServer", () => {
@@ -723,6 +734,79 @@ describe("ChatKitServer", () => {
     }
 
     expect(replaced.item.attachments[0]).not.toHaveProperty("metadata");
+  });
+
+  test("strips attachment metadata from processRequest event streams", async () => {
+    const attachmentStore = new TestAttachmentStore();
+    const server = new TestServer(emptyResponse, undefined, attachmentStore);
+    await server.store.saveAttachment(
+      {
+        id: "atc_event_api",
+        type: "file",
+        name: "event-api.txt",
+        mime_type: "text/plain",
+        metadata: { source: "internal" },
+      },
+      defaultContext,
+    );
+
+    const result = await server.processRequest(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: ["atc_event_api"],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    );
+    if (!(result instanceof StreamingEventResult)) {
+      throw new Error("Expected streaming event result");
+    }
+
+    const events = await collectEvents(result.stream());
+    const userMessageEvent = events.find((event) => event.type === "thread.item.done");
+    if (!userMessageEvent || userMessageEvent.type !== "thread.item.done" || userMessageEvent.item.type !== "user_message") {
+      throw new Error("Expected streamed user message");
+    }
+
+    expect(userMessageEvent.item.attachments[0]).not.toHaveProperty("metadata");
+    await expect(server.store.loadAttachment("atc_event_api", defaultContext)).resolves.toMatchObject({
+      metadata: { source: "internal" },
+    });
+  });
+
+  test("processRequest streaming event results are one-shot", async () => {
+    const server = new TestServer();
+    const result = await server.processRequest(
+      JSON.stringify({
+        type: "threads.create",
+        params: {
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    );
+    if (!(result instanceof StreamingEventResult)) {
+      throw new Error("Expected streaming event result");
+    }
+
+    await collectEvents(result.stream());
+    await expect(collectEvents(result.stream())).rejects.toThrow(
+      "StreamingEventResult can only be streamed once.",
+    );
+
+    const threads = await server.store.loadThreads(10, null, "asc", defaultContext);
+    expect(threads.data).toHaveLength(1);
   });
 
   test("persists the submitted user message before streaming a created thread", async () => {
@@ -1776,6 +1860,90 @@ describe("ChatKitServer", () => {
     expect(events.at(-1)).toEqual({
       type: "error",
       code: "stream.error",
+      allow_retry: false,
+    });
+  });
+
+  test("persists thread mutations before typed stream errors complete", async () => {
+    const server = new TestServer(async function* (thread) {
+      thread.title = "Changed before typed error";
+      throw new StreamError("rate_limit.exceeded");
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events).toContainEqual({
+      type: "error",
+      code: "rate_limit.exceeded",
+      allow_retry: false,
+    });
+    expect(events).toContainEqual({
+      type: "thread.updated",
+      thread: {
+        id: thread.id,
+        created_at: thread.created_at,
+        title: "Changed before typed error",
+        status: { type: "active" },
+        items: { data: [], has_more: false, after: null },
+      },
+    });
+    await expect(server.store.loadThread(thread.id, defaultContext)).resolves.toMatchObject({
+      title: "Changed before typed error",
+    });
+  });
+
+  test("maps stream errors thrown while building stream options", async () => {
+    class StreamOptionsErrorServer extends TestServer {
+      override getStreamOptions(
+        _thread: ThreadMetadata,
+        _context: RequestContext,
+        _runtime: ChatKitStreamRuntime,
+      ): StreamOptions {
+        throw new StreamError("rate_limit.exceeded");
+      }
+    }
+
+    const server = new StreamOptionsErrorServer();
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+
+    const events = await decodeStream(result);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      code: "rate_limit.exceeded",
       allow_retry: false,
     });
   });
