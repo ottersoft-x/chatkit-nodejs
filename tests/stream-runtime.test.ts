@@ -63,6 +63,63 @@ test("nextWithAbort removes abort listener after operation resolves", async () =
   assert.equal(abortListeners, 0);
 });
 
+test("nextWithAbort removes abort listener after operation rejects", async () => {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const originalAdd = signal.addEventListener.bind(signal);
+  const originalRemove = signal.removeEventListener.bind(signal);
+  let abortListeners = 0;
+  const expected = new Error("next failed");
+
+  signal.addEventListener = ((
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ) => {
+    if (type === "abort") abortListeners++;
+    return originalAdd(type, listener, options);
+  }) as typeof signal.addEventListener;
+  signal.removeEventListener = ((
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ) => {
+    if (type === "abort") abortListeners--;
+    return originalRemove(type, listener, options);
+  }) as typeof signal.removeEventListener;
+
+  await assert.rejects(
+    nextWithAbort(Promise.reject<IteratorResult<string>>(expected), signal),
+    expected,
+  );
+
+  assert.equal(abortListeners, 0);
+});
+
+test("nextWithAbort observes late next rejection when signal is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const unhandled: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    const next = new Promise<IteratorResult<string>>((_, reject) => {
+      setImmediate(() => reject(new Error("late next rejection")));
+    });
+
+    await assert.rejects(nextWithAbort(next, controller.signal), StreamCancelledError);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+  }
+});
+
 test("returnIterator invokes iterator return when available", async () => {
   let returned = false;
   await returnIterator({
@@ -76,4 +133,20 @@ test("returnIterator invokes iterator return when available", async () => {
   });
 
   assert.equal(returned, true);
+});
+
+test("returnIterator propagates iterator return errors", async () => {
+  const expected = new Error("return failed");
+
+  await assert.rejects(
+    returnIterator({
+      async next() {
+        return { done: true, value: undefined };
+      },
+      async return() {
+        throw expected;
+      },
+    }),
+    expected,
+  );
 });

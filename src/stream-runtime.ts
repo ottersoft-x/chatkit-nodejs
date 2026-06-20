@@ -34,7 +34,12 @@ export async function nextWithAbort<T>(
   next: Promise<IteratorResult<T>>,
   signal: AbortSignal,
 ): Promise<IteratorResult<T>> {
+  const observedNext = next.catch((error: unknown) => {
+    throw error;
+  });
+  void observedNext.catch(() => {});
   throwIfAborted(signal);
+
   let cleanup = (): void => {};
   const abort = new Promise<never>((_, reject) => {
     const rejectCancelled = () => reject(new StreamCancelledError());
@@ -43,7 +48,7 @@ export async function nextWithAbort<T>(
   });
 
   try {
-    return await Promise.race([next, abort]);
+    return await Promise.race([observedNext, abort]);
   } finally {
     cleanup();
   }
