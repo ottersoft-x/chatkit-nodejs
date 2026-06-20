@@ -722,12 +722,12 @@ export abstract class ChatKitServer<TContext = unknown> {
       }
     }
 
-    if (terminalEvent) {
-      yield terminalEvent;
-    }
-
     if (await saveThreadIfChanged()) {
       yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
+    }
+
+    if (terminalEvent) {
+      yield terminalEvent;
     }
   }
 

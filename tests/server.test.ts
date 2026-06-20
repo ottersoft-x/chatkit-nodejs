@@ -283,6 +283,23 @@ async function collectEvents(events: AsyncIterable<ThreadStreamEvent>): Promise<
   return collected;
 }
 
+async function readNextSseEvent(
+  iterator: AsyncIterator<Uint8Array>,
+): Promise<ThreadStreamEvent | null> {
+  const next = await iterator.next();
+  if (next.done) {
+    return null;
+  }
+
+  const frame = new TextDecoder().decode(next.value).split("\n\n").find(Boolean);
+  if (!frame) {
+    return null;
+  }
+
+  const json = frame.startsWith("data: ") ? frame.slice("data: ".length) : frame;
+  return JSON.parse(json) as ThreadStreamEvent;
+}
+
 describe("ChatKitServer", () => {
   test("lists threads as a paginated non-streaming page", async () => {
     const server = new TestServer();
@@ -1906,6 +1923,48 @@ describe("ChatKitServer", () => {
     });
     await expect(server.store.loadThread(thread.id, defaultContext)).resolves.toMatchObject({
       title: "Changed before typed error",
+    });
+  });
+
+  test("persists thread mutations before yielding terminal stream errors", async () => {
+    const server = new TestServer(async function* (thread) {
+      thread.title = "Persisted before terminal error";
+      throw new StreamError("rate_limit.exceeded");
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+    )) as StreamingResult;
+    const iterator = result[Symbol.asyncIterator]();
+    let event: ThreadStreamEvent | null = null;
+
+    do {
+      event = await readNextSseEvent(iterator);
+    } while (event && event.type !== "error");
+
+    expect(event).toEqual({
+      type: "error",
+      code: "rate_limit.exceeded",
+      allow_retry: false,
+    });
+    await iterator.return?.();
+
+    await expect(server.store.loadThread(thread.id, defaultContext)).resolves.toMatchObject({
+      title: "Persisted before terminal error",
     });
   });
 
