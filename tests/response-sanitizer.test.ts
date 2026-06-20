@@ -435,3 +435,19 @@ test("sanitizeClientPayload follows JSON serialization semantics for unknown pay
   expectType<typeof input>(sanitized);
   assert.deepEqual(sanitized, { metadata: { keep: true } });
 });
+
+test("sanitizeClientPayload keeps broad unrelated record type", () => {
+  const input: Record<string, unknown> = { metadata: { keep: true } };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<Record<string, unknown>>(sanitized);
+  assert.deepEqual(sanitized, input);
+});
+
+test("sanitizeClientPayload keeps invalid updated item record type", () => {
+  const input = { updated_item: "invalid", custom: true };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<typeof input>(sanitized);
+  assert.deepEqual(sanitized, input);
+});
