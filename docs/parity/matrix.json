@@ -256,7 +256,7 @@
         ],
         "tests": []
       },
-      "notes": "Core request processing, persistence, cancellation, retry, actions, transcription, and HTTP streaming are covered; some broader Python server surfaces remain future parity rows.",
+      "notes": "Core request processing, persistence, explicit cancellation, retry, actions, transcription, and HTTP streaming are covered. Node.js intentionally improves on Python's transport-coupled cancellation by treating default SSE disconnect as subscriber detach while preserving Python-aligned explicit cancellation behavior.",
       "nodejs": {
         "tests": [
           "tests/server.test.ts",

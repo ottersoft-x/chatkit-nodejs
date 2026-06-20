@@ -215,8 +215,14 @@ const server = createServer(async (incoming, outgoing) => {
     const response = await chatkitHandler(request);
     outgoing.writeHead(response.status, Object.fromEntries(response.headers));
     if (response.body) {
-      for await (const chunk of response.body) {
-        outgoing.write(chunk);
+      const reader = response.body.getReader();
+      outgoing.on("close", () => {
+        void reader.cancel();
+      });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        outgoing.write(value);
       }
     }
     outgoing.end();
@@ -235,3 +241,18 @@ server.listen(port, () => {
 
 The server listens on `PORT` or `3000` and exposes `POST /chatkit`. It uses
 `x-user-id` as the per-request user id, falling back to `anonymous`.
+
+### Stream disconnects and cancellation
+
+By default, `createChatKitHandler` treats an HTTP/SSE disconnect as a lost
+subscriber, not as user cancellation. This matters for mobile browsers: if the
+device sleeps while a response is streaming, the in-process response run keeps
+draining and persists the final thread items. When the client returns, reload
+the thread or call ChatKit JS `fetchUpdates()` to recover the completed state.
+
+Explicit user cancellation must use a separate app route or control that calls
+`ResponseRunManager.cancelRun({ runId, context })`. Do not treat generic fetch
+abort as user cancellation unless you configure `disconnectBehavior: "cancel"`.
+
+The in-process run manager is not crash durable. Use application infrastructure
+for restart recovery or cross-process workers.
