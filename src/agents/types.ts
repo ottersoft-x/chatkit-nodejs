@@ -18,6 +18,7 @@ export interface AgentStreamInput {
 
 export interface StreamAgentResponseOptions {
   converter?: ResponseStreamConverter;
+  signal?: AbortSignal;
 }
 
 export interface ToolCallMetadata {

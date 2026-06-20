@@ -11,6 +11,7 @@ import { expect } from "./helpers/expect.js";
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents/index.js";
 import { ResponseStreamConverter } from "../src/agents/annotations.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
+import { StreamCancelledError } from "../src/stream-runtime.js";
 import { BaseStore, type Store, type StoreItemType } from "../src/store.js";
 import type {
   Annotation,
@@ -3922,6 +3923,36 @@ describe("streamAgentResponse", () => {
     await expect(iterator.next()).resolves.toMatchObject({ done: false });
     await iterator.return?.();
 
+    expect(returned).toBe(true);
+    expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
+      "Cannot stream events after the agent context has completed.",
+    );
+  });
+
+  test("explicit cancellation stops a never-settling SDK stream", async () => {
+    const agentContext = createContext();
+    const controller = new AbortController();
+    let returned = false;
+    const stream = {
+      [Symbol.asyncIterator](): AsyncIterator<unknown> {
+        return {
+          next: () => new Promise<IteratorResult<unknown>>(() => {}),
+          async return() {
+            returned = true;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+
+    const iterator = streamAgentResponse(agentContext, stream, {
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    controller.abort();
+
+    await expect(next).rejects.toBeInstanceOf(StreamCancelledError);
     expect(returned).toBe(true);
     expect(() => agentContext.stream({ type: "progress_update", text: "late" })).toThrow(
       "Cannot stream events after the agent context has completed.",

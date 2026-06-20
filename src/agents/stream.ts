@@ -4,6 +4,10 @@ import {
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
 } from "@openai/agents";
+import {
+  StreamCancelledError,
+  returnIterator as returnIteratorWithAbort,
+} from "../stream-runtime.js";
 import type { AssistantMessageContent, ThreadItem } from "../types/core.js";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../types/server.js";
 import { convertTextContentPart, defaultResponseStreamConverter } from "./annotations.js";
@@ -361,6 +365,72 @@ function tagNext<T>(source: StreamSource, promise: PromiseLike<IteratorResult<T>
   return tagged;
 }
 
+function tagNextWithAbort<T>(
+  source: StreamSource,
+  next: PromiseLike<IteratorResult<T>>,
+  signal: AbortSignal,
+): TaggedNext<T> {
+  const tagged: TaggedNext<T> = {
+    promise: Promise.resolve(null as never),
+    result: null,
+    error: null,
+  };
+
+  if (signal.aborted) {
+    const error = new StreamCancelledError();
+    tagged.error = error;
+    tagged.promise = Promise.reject(error);
+    tagged.promise.catch(() => undefined);
+    Promise.resolve(next).catch(() => undefined);
+    return tagged;
+  }
+
+  let settled = false;
+  let cleanup = (): void => {};
+  const nextPromise = Promise.resolve(next).then(
+    (result) => {
+      if (settled) {
+        return { source, result };
+      }
+
+      settled = true;
+      cleanup();
+      const taggedResult = { source, result };
+      tagged.result = taggedResult;
+      return taggedResult;
+    },
+    (error: unknown) => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        tagged.error = error;
+      }
+
+      throw error;
+    },
+  );
+  const abortPromise = new Promise<never>((_, reject) => {
+    const rejectCancelled = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      const error = new StreamCancelledError();
+      tagged.error = error;
+      reject(error);
+    };
+
+    signal.addEventListener("abort", rejectCancelled, { once: true });
+    cleanup = () => signal.removeEventListener("abort", rejectCancelled);
+  });
+
+  tagged.promise = Promise.race([nextPromise, abortPromise]);
+  tagged.promise.catch(() => undefined);
+  return tagged;
+}
+
 function isGuardrailTripwire(error: unknown): boolean {
   return (
     error instanceof InputGuardrailTripwireTriggered ||
@@ -406,7 +476,7 @@ function rollbackProducedItemEvents(producedItemIds: ReadonlySet<string>): Threa
 
 async function returnIterator<T>(iterator: AsyncIterator<T>): Promise<void> {
   try {
-    await iterator.return?.();
+    await returnIteratorWithAbort(iterator);
   } catch {
     // Iterator cleanup is best-effort and must not mask the stream error.
   }
@@ -916,6 +986,7 @@ export async function* streamAgentResponse<TContext>(
   options: StreamAgentResponseOptions = {},
 ): AsyncIterable<ThreadStreamEvent> {
   const converter = options.converter ?? defaultResponseStreamConverter;
+  const signal = options.signal ?? new AbortController().signal;
   const recentItems = await context.store.loadThreadItems(
     context.thread.id,
     null,
@@ -940,7 +1011,7 @@ export async function* streamAgentResponse<TContext>(
   const producedItemIds = new Set<string>();
   let sdkDone = false;
   let contextDone = false;
-  let sdkNext = tagNext("sdk", sdkIterator.next());
+  let sdkNext = tagNextWithAbort("sdk", sdkIterator.next(), signal);
   let contextNext = tagNext("context", contextIterator.next());
 
   try {
@@ -1017,7 +1088,7 @@ export async function* streamAgentResponse<TContext>(
         continue;
       }
 
-      sdkNext = tagNext("sdk", sdkIterator.next());
+      sdkNext = tagNextWithAbort("sdk", sdkIterator.next(), signal);
       const metadata = toolCallMetadata(next.result.value);
 
       if (metadata) {
