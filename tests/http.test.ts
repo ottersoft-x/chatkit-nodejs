@@ -472,6 +472,56 @@ describe("createChatKitHandler", () => {
     await waitFor(cancellationObserved, "Expected disconnectBehavior cancel to abort the run");
   });
 
+  test("disconnectBehavior cancel aborts the run while a read is pending", async () => {
+    let observeCancellation!: () => void;
+    const cancellationObserved = new Promise<void>((resolve) => {
+      observeCancellation = resolve;
+    });
+    const server = new RecordingServer(
+      new StreamingEventResult((runtime) => ({
+        [Symbol.asyncIterator](): AsyncIterator<ThreadStreamEvent> {
+          let sent = false;
+          runtime.signal.addEventListener("abort", observeCancellation, { once: true });
+
+          return {
+            async next(): Promise<IteratorResult<ThreadStreamEvent>> {
+              if (!sent) {
+                sent = true;
+                return {
+                  done: false,
+                  value: { type: "notice", level: "info", message: "first" },
+                };
+              }
+
+              await new Promise<void>(() => {});
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      })),
+    );
+    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>();
+    const handler = createChatKitHandler(server, {
+      runManager,
+      disconnectBehavior: "cancel",
+    });
+
+    const response = await handler(
+      new Request("https://example.com/chatkit", {
+        method: "POST",
+        body: JSON.stringify({ type: "threads.create", params: {} }),
+      }),
+    );
+    const reader = response.body!.getReader();
+
+    expect((await reader.read()).done).toBe(false);
+
+    const pendingRead = reader.read();
+    await waitFor(reader.cancel(), "Expected response cancellation to resolve with a pending read");
+    await waitFor(cancellationObserved, "Expected pending-read cancellation to abort the run");
+    await expect(pendingRead).resolves.toEqual({ done: true, value: undefined });
+  });
+
   test("explicit run manager cancellation persists partial state and hidden context", async () => {
     let markPartialReady!: () => void;
     const partialReady = new Promise<void>((resolve) => {

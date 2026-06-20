@@ -42,8 +42,9 @@ export function createChatKitHandler<TContext = undefined>(
       });
 
       return new Response(
-        toReadableStream(server.serializeStreamingEventsForHandler(subscription.events), {
+        toReadableStream(subscription.events, {
           completed: run.completed,
+          serializeEvent: (event) => server.serializeStreamingEventForHandler(event),
           onCancel: async () => {
             if (disconnectBehavior === "cancel") {
               await runManager.cancelRun({ runId: run.runId, context });
@@ -68,31 +69,37 @@ export function createChatKitHandler<TContext = undefined>(
 interface ReadableStreamOptions {
   completed?: Promise<void>;
   onCancel?: () => Promise<void>;
+  serializeEvent: (event: ThreadStreamEvent) => Uint8Array;
 }
 
 function toReadableStream(
-  iterable: AsyncIterable<Uint8Array>,
-  options: ReadableStreamOptions = {},
+  iterable: AsyncIterable<ThreadStreamEvent>,
+  options: ReadableStreamOptions,
 ): ReadableStream<Uint8Array> {
   const iterator = iterable[Symbol.asyncIterator]();
+  let cancelled = false;
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       const next = await iterator.next();
 
       if (next.done) {
-        await options.completed;
+        if (!cancelled) {
+          await options.completed;
+        }
         controller.close();
         return;
       }
 
-      controller.enqueue(next.value);
+      controller.enqueue(options.serializeEvent(next.value));
     },
     async cancel() {
+      cancelled = true;
+      const returned = iterator.return?.();
       try {
-        await iterator.return?.();
-      } finally {
         await options.onCancel?.();
+      } finally {
+        await returned;
       }
     },
   });

@@ -179,6 +179,7 @@ test("cancelRun is scoped and idempotent", async () => {
   });
   const run = await manager.startRun({
     context: { userId: "user_1" },
+    supportsExplicitCancel: false,
     source: ({ signal }) => ({
       [Symbol.asyncIterator](): AsyncIterator<string> {
         signal.addEventListener("abort", () => {
@@ -216,10 +217,63 @@ test("cancelRun is scoped and idempotent", async () => {
   );
 });
 
+test("cancelRun waits for cooperative cancellation cleanup before reporting cancelled", async () => {
+  let markAbortObserved!: () => void;
+  const abortObserved = new Promise<void>((resolve) => {
+    markAbortObserved = resolve;
+  });
+  let releaseCleanup!: () => void;
+  const cleanupReleased = new Promise<void>((resolve) => {
+    releaseCleanup = resolve;
+  });
+  let cleanupFinished = false;
+  const manager = new ResponseRunManager<undefined, string>();
+  const run = await manager.startRun({
+    context: undefined,
+    supportsExplicitCancel: true,
+    source: ({ signal }) => ({
+      [Symbol.asyncIterator](): AsyncIterator<string> {
+        return {
+          next() {
+            return new Promise<IteratorResult<string>>((_, reject) => {
+              signal.addEventListener(
+                "abort",
+                async () => {
+                  markAbortObserved();
+                  await cleanupReleased;
+                  cleanupFinished = true;
+                  reject(new StreamCancelledError());
+                },
+                { once: true },
+              );
+            });
+          },
+        };
+      },
+    }),
+  });
+
+  const cancel = manager.cancelRun({ runId: run.runId, context: undefined });
+  await abortObserved;
+  const earlyResult = await Promise.race([
+    cancel.then(() => "resolved"),
+    new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+  ]);
+
+  assert.equal(earlyResult, "pending");
+  assert.equal(cleanupFinished, false);
+
+  releaseCleanup();
+
+  assert.deepEqual(await cancel, { status: "cancelled" });
+  assert.equal(cleanupFinished, true);
+});
+
 test("cancelRun does not wait for async generator return behind pending next", async () => {
   const manager = new ResponseRunManager<undefined, string>();
   const run = await manager.startRun({
     context: undefined,
+    supportsExplicitCancel: false,
     source: async function* () {
       await new Promise<void>(() => {});
       yield "late";

@@ -260,7 +260,10 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
       record.sourceIterator = iterator;
 
       while (true) {
-        const next = await nextWithAbort(iterator.next(), record.controller.signal);
+        const nextPromise = iterator.next();
+        const next = supportsExplicitCancel
+          ? await nextPromise
+          : await nextWithAbort(nextPromise, record.controller.signal);
         if (next.done) {
           break;
         }
@@ -281,7 +284,10 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
     } finally {
       if (record.sourceIterator && terminalStatus !== "completed") {
         const sourceReturn = returnIterator(record.sourceIterator);
-        if (terminalStatus === "cancelled" || record.controller.signal.aborted) {
+        if (
+          !supportsExplicitCancel &&
+          (terminalStatus === "cancelled" || record.controller.signal.aborted)
+        ) {
           void sourceReturn.catch(() => undefined);
         } else {
           try {

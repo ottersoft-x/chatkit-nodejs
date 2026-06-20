@@ -303,15 +303,13 @@ export abstract class ChatKitServer<TContext = unknown> {
 
   protected async *serializeStreamingEvents(events: AsyncIterable<ThreadStreamEvent>): AsyncIterable<Uint8Array> {
     for await (const event of events) {
-      const json = sseDecoder.decode(this.serialize(event));
-      yield sseEncoder.encode(`data: ${json}\n\n`);
+      yield this.serializeStreamingEventForHandler(event);
     }
   }
 
-  serializeStreamingEventsForHandler(
-    events: AsyncIterable<ThreadStreamEvent>,
-  ): AsyncIterable<Uint8Array> {
-    return this.serializeStreamingEvents(events);
+  serializeStreamingEventForHandler(event: ThreadStreamEvent): Uint8Array {
+    const json = sseDecoder.decode(this.serialize(event));
+    return sseEncoder.encode(`data: ${json}\n\n`);
   }
 
   protected async *processStreamingEvents(
