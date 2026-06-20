@@ -696,11 +696,11 @@ export abstract class ChatKitServer<TContext = unknown> {
       }
       completedNormally = true;
     } catch (error) {
-      if (error instanceof StreamCancelledError) {
+      if (error instanceof StreamCancelledError || runtime.signal.aborted) {
         cancellationHandled = true;
         await saveThreadIfChanged();
         await this.handleStreamCancelled(thread, [...pendingItems.values()], context);
-        throw error;
+        throw error instanceof StreamCancelledError ? error : new StreamCancelledError();
       }
 
       if (error instanceof CustomStreamError) {

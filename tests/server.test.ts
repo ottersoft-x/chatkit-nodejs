@@ -1728,6 +1728,60 @@ describe("ChatKitServer", () => {
     });
   });
 
+  test("abort errors after explicit runtime abort persist cancellation state", async () => {
+    const controller = new AbortController();
+    const server = new TestServer(async function* (thread) {
+      const assistant = { ...makeAssistantMessage(""), id: "msg_abort_error", thread_id: thread.id };
+      yield { type: "thread.item.added", item: assistant };
+      yield {
+        type: "thread.item.updated",
+        item_id: assistant.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "Partial before abort error",
+        },
+      };
+      controller.abort();
+      throw new DOMException("The operation was aborted.", "AbortError");
+    });
+    const thread = makeThread();
+    await server.store.saveThread(thread, defaultContext);
+
+    const result = (await server.process(
+      JSON.stringify({
+        type: "threads.add_user_message",
+        params: {
+          thread_id: thread.id,
+          input: {
+            content: [{ type: "input_text", text: "Start" }],
+            attachments: [],
+            inference_options: {},
+          },
+        },
+        metadata: {},
+      }),
+      defaultContext,
+      {
+        runtime: {
+          signal: controller.signal,
+          supportsExplicitCancel: true,
+        },
+      },
+    )) as StreamingResult;
+
+    await expect(decodeStream(result)).rejects.toBeInstanceOf(StreamCancelledError);
+    const items = await server.store.loadThreadItems(thread.id, null, 10, "asc", defaultContext);
+    expect(items.data.find((item) => item.id === "msg_abort_error")).toMatchObject({
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Partial before abort error", annotations: [] }],
+    });
+    expect(items.data.find((item) => item.type === "sdk_hidden_context")).toMatchObject({
+      type: "sdk_hidden_context",
+      content: "The user cancelled the stream. Stop responding to the prior request.",
+    });
+  });
+
   test("only advertises stream cancellation when explicit cancellation is supported", async () => {
     const server = new TestServer();
     const request = JSON.stringify({

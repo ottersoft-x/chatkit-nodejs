@@ -251,8 +251,20 @@ draining and persists the final thread items. When the client returns, reload
 the thread or call ChatKit JS `fetchUpdates()` to recover the completed state.
 
 Explicit user cancellation must use a separate app route or control that calls
-`ResponseRunManager.cancelRun({ runId, context })`. Do not treat generic fetch
-abort as user cancellation unless you configure `disconnectBehavior: "cancel"`.
+`ResponseRunManager.cancelRun({ runId, context })`. The handler sends the active
+run id in the `x-chatkit-run-id` response header; expose that header from your
+app if browser code needs to read it across origins. Share one
+`ResponseRunManager` instance between the ChatKit handler and the cancel route,
+and pass the same request context shape to both calls. Use `getRunScope` to
+bind run access to the authenticated user, tenant, or other app-specific
+boundary.
+
+Set `supportsExplicitCancel: true` only for responders or custom action streams
+that observe `runtime.signal`, or that delegate to helpers such as
+`streamAgentResponse` which do. Otherwise leave it unset so cancellation can
+complete without waiting on a stream that cannot react to abort. Do not treat
+generic fetch abort as user cancellation unless you configure
+`disconnectBehavior: "cancel"`.
 
 The in-process run manager is not crash durable. Use application infrastructure
 for restart recovery or cross-process workers.

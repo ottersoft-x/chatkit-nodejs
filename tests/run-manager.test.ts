@@ -55,6 +55,22 @@ test("initial subscriber receives synchronously yielded events", async () => {
   await run.completed;
 });
 
+test("run manager does not advertise explicit cancellation by default", async () => {
+  let supportsExplicitCancel: boolean | undefined;
+  const manager = new ResponseRunManager<undefined, string>();
+  const { run, subscription } = await manager.startRunAndSubscribe({
+    context: undefined,
+    source: async function* (runtime) {
+      supportsExplicitCancel = runtime.supportsExplicitCancel;
+      yield "done";
+    },
+  });
+
+  assert.deepEqual(await collect(subscription.events), ["done"]);
+  await run.completed;
+  assert.equal(supportsExplicitCancel, false);
+});
+
 test("new subscribers can attach by run id and receive later events", async () => {
   let release!: () => void;
   const released = new Promise<void>((resolve) => {
@@ -80,6 +96,23 @@ test("new subscribers can attach by run id and receive later events", async () =
   release();
 
   assert.deepEqual(await collect(second.events), ["second"]);
+});
+
+test("slow subscribers are detached when their event buffer fills", async () => {
+  const manager = new ResponseRunManager<undefined, string>({ maxQueuedEvents: 1 });
+  const { run, subscription } = await manager.startRunAndSubscribe({
+    context: undefined,
+    source: async function* () {
+      yield "first";
+      yield "second";
+      yield "third";
+    },
+  });
+
+  await run.completed;
+
+  const iterator = subscription.events[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { done: true, value: undefined });
 });
 
 test("subscribe closes when run finishes during async scope validation", async () => {

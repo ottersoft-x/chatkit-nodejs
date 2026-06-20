@@ -16,6 +16,7 @@ export type CancelRunResult =
 
 export interface ResponseRunManagerOptions<TContext> {
   getRunScope?: (context: TContext) => string | Promise<string>;
+  maxQueuedEvents?: number;
 }
 
 export interface StartRunOptions<TContext, TEvent> {
@@ -34,30 +35,55 @@ export interface CancelRunOptions<TContext> {
   context: TContext;
 }
 
+const DEFAULT_MAX_QUEUED_EVENTS = 1024;
+
+function resolveMaxQueuedEvents(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_QUEUED_EVENTS;
+  }
+
+  if (!Number.isInteger(value) || value < 1) {
+    throw new RangeError("maxQueuedEvents must be a positive integer.");
+  }
+
+  return value;
+}
+
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private readonly values: Array<IteratorYieldResult<T>> = [];
   private readonly waiting: Array<(result: IteratorResult<T>) => void> = [];
   private closed = false;
 
-  push(value: T): void {
+  constructor(private readonly maxQueuedEvents: number) {}
+
+  push(value: T): boolean {
     if (this.closed) {
-      return;
+      return false;
     }
 
     const resolve = this.waiting.shift();
     if (resolve) {
       resolve({ done: false, value });
-      return;
+      return true;
+    }
+
+    if (this.values.length >= this.maxQueuedEvents) {
+      this.close(true);
+      return false;
     }
 
     this.values.push({ done: false, value });
+    return true;
   }
 
-  close(): void {
+  close(discardQueued = false): void {
     if (this.closed) {
       return;
     }
 
+    if (discardQueued) {
+      this.values.splice(0);
+    }
     this.closed = true;
     for (const resolve of this.waiting.splice(0)) {
       resolve({ done: true, value: undefined });
@@ -119,8 +145,11 @@ export interface ResponseRunStart<TEvent> {
 
 export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
   private readonly runs = new Map<string, ResponseRunRecord<TEvent>>();
+  private readonly maxQueuedEvents: number;
 
-  constructor(private readonly options: ResponseRunManagerOptions<TContext> = {}) {}
+  constructor(private readonly options: ResponseRunManagerOptions<TContext> = {}) {
+    this.maxQueuedEvents = resolveMaxQueuedEvents(options.maxQueuedEvents);
+  }
 
   async startRun(options: StartRunOptions<TContext, TEvent>): Promise<ResponseRunHandle> {
     return (await this.startRunInternal(options, null)).run;
@@ -129,7 +158,7 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
   async startRunAndSubscribe(
     options: StartRunOptions<TContext, TEvent>,
   ): Promise<ResponseRunStart<TEvent>> {
-    return this.startRunInternal(options, new AsyncEventQueue<TEvent>());
+    return this.startRunInternal(options, new AsyncEventQueue<TEvent>(this.maxQueuedEvents));
   }
 
   async subscribe(options: SubscribeRunOptions<TContext>): Promise<ResponseRunSubscription<TEvent>> {
@@ -146,7 +175,7 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
       return { events: this.closedIterable() };
     }
 
-    const queue = new AsyncEventQueue<TEvent>();
+    const queue = new AsyncEventQueue<TEvent>(this.maxQueuedEvents);
     record.subscribers.add(queue);
 
     return this.subscriptionFor(record, queue);
@@ -212,7 +241,7 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
 
     void completed.catch(() => {});
     this.runs.set(runId, record);
-    void this.drainRun(record, options.source, options.supportsExplicitCancel ?? true);
+    void this.drainRun(record, options.source, options.supportsExplicitCancel ?? false);
 
     return {
       run,
@@ -269,7 +298,9 @@ export class ResponseRunManager<TContext = unknown, TEvent = Uint8Array> {
         }
 
         for (const subscriber of record.subscribers) {
-          subscriber.push(next.value);
+          if (!subscriber.push(next.value)) {
+            record.subscribers.delete(subscriber);
+          }
         }
       }
 
