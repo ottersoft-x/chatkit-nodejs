@@ -8,9 +8,11 @@ import {
 } from "../src/response-sanitizer.js";
 import type {
   ClientPage,
+  ClientSyncCustomActionResponse,
   ClientThread,
   ClientThreadItem,
   ClientThreadStreamEvent,
+  SyncCustomActionResponsePayloadInput,
   ThreadItemPagePayloadInput,
   ThreadItemPayloadInput,
   ThreadStreamEventPayloadInput,
@@ -188,6 +190,21 @@ test("sanitizeClientPayload handles pages with undefined after cursor", () => {
   assert.equal("metadata" in item.attachments[0]!, false);
 });
 
+test("sanitizeClientPayload handles pages with omitted has_more", () => {
+  const input: ThreadItemPagePayloadInput = {
+    data: [userMessage],
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientPage<ThreadItemPagePayloadInput, ClientThreadItem>>(sanitized);
+  assert.equal(sanitized.has_more, false);
+  const item = sanitized.data[0];
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
+});
+
 test("sanitizeClientPayload uses parsed item defaults before sanitizing", () => {
   const input: ThreadItemPayloadInput = {
     id: "msg_defaulted",
@@ -249,6 +266,20 @@ test("sanitizeClientPayload uses parsed item defaults inside events", () => {
   }
   assert.deepEqual(sanitized.item.attachments, []);
   assert.deepEqual(sanitized.item.inference_options, {});
+});
+
+test("sanitizeClientPayload strips metadata from sync custom action response items", () => {
+  const input: SyncCustomActionResponsePayloadInput = {
+    updated_item: userMessage,
+  };
+  const sanitized = sanitizeClientPayload(input);
+
+  expectType<ClientSyncCustomActionResponse>(sanitized);
+  const item = sanitized.updated_item;
+  if (!item || item.type !== "user_message") {
+    throw new Error("Expected user message");
+  }
+  assert.equal("metadata" in item.attachments[0]!, false);
 });
 
 test("sanitizeClientPayload preserves nested thread item page fields", () => {

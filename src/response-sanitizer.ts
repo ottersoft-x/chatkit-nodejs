@@ -1,6 +1,13 @@
 import { omitUndefinedDeep } from "./serialization.js";
 import { AttachmentSchema, PageSchema, ThreadItemSchema, type Attachment, type Page, type ThreadItem } from "./types/core.js";
-import { ThreadSchema, ThreadStreamEventSchema, type Thread, type ThreadStreamEvent } from "./types/server.js";
+import {
+  SyncCustomActionResponseSchema,
+  ThreadSchema,
+  ThreadStreamEventSchema,
+  type SyncCustomActionResponse,
+  type Thread,
+  type ThreadStreamEvent,
+} from "./types/server.js";
 import type { z } from "zod";
 
 const ThreadItemPageSchema = PageSchema(ThreadItemSchema);
@@ -19,14 +26,17 @@ export type AttachmentPayloadInput = z.input<typeof AttachmentSchema>;
 export type ThreadItemPayloadInput = z.input<typeof ThreadItemSchema>;
 export type ThreadPayloadInput = z.input<typeof ThreadSchema>;
 export type ThreadStreamEventPayloadInput = z.input<typeof ThreadStreamEventSchema>;
+export type SyncCustomActionResponsePayloadInput = {
+  updated_item: ThreadItemPayloadInput | null | undefined;
+};
 export type ThreadItemPagePayloadInput = {
   data: ThreadItemPayloadInput[];
-  has_more: boolean;
+  has_more?: boolean | undefined;
   after?: string | null | undefined;
 };
 export type ThreadPagePayloadInput = {
   data: ThreadPayloadInput[];
-  has_more: boolean;
+  has_more?: boolean | undefined;
   after?: string | null | undefined;
 };
 
@@ -54,6 +64,12 @@ export type ClientThreadStreamEvent<TEvent extends ThreadStreamEvent = ThreadStr
       ? Omit<TEvent, "thread"> & { thread: ClientThread<TEvent["thread"]> }
       : TEvent;
 
+export type ClientSyncCustomActionResponse<
+  TResponse extends { updated_item?: ThreadItemPayloadInput | null | undefined } = SyncCustomActionResponse,
+> = Omit<TResponse, "updated_item"> & {
+  updated_item?: ClientThreadItem | null;
+};
+
 export type ClientPayload<T> =
   T extends AttachmentPayloadInput
     ? ClientAttachment
@@ -63,15 +79,17 @@ export type ClientPayload<T> =
         ? ClientThread
         : T extends ThreadStreamEventPayloadInput
           ? ClientThreadStreamEvent
-          : T extends { data: readonly (infer TItem)[]; has_more: boolean; after?: string | null | undefined }
-            ? [TItem] extends [never]
-              ? T
-              : T extends ThreadItemPagePayloadInput
-                ? ClientPage<T, ClientThreadItem>
-                : T extends ThreadPagePayloadInput
-                  ? ClientPage<T, ClientThread>
-                  : T
-            : T;
+          : T extends SyncCustomActionResponsePayloadInput
+            ? ClientSyncCustomActionResponse<T>
+            : T extends { data: readonly (infer TItem)[]; has_more?: boolean | undefined; after?: string | null | undefined }
+              ? [TItem] extends [never]
+                ? T
+                : T extends ThreadItemPagePayloadInput
+                  ? ClientPage<T, ClientThreadItem>
+                  : T extends ThreadPagePayloadInput
+                    ? ClientPage<T, ClientThread>
+                    : T
+              : T;
 
 function jsonClone<T>(value: T): T {
   const json = JSON.stringify(omitUndefinedDeep(value));
@@ -85,11 +103,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPageRecord(value: unknown): value is Page<unknown> {
+function isPageRecord(
+  value: unknown,
+): value is { data: unknown[]; has_more?: boolean | undefined; after?: string | null | undefined } & Record<
+  string,
+  unknown
+> {
   return (
     isRecord(value) &&
     Array.isArray(value.data) &&
-    typeof value.has_more === "boolean" &&
+    (!("has_more" in value) || typeof value.has_more === "boolean" || value.has_more === undefined) &&
     (!("after" in value) ||
       typeof value.after === "string" ||
       value.after === null ||
@@ -204,6 +227,20 @@ export function sanitizeThreadStreamEvent<TEvent extends ThreadStreamEvent>(
   return jsonClone(event) as ClientThreadStreamEvent<TEvent>;
 }
 
+export function sanitizeSyncCustomActionResponse<TResponse extends SyncCustomActionResponse>(
+  response: TResponse,
+): ClientSyncCustomActionResponse<TResponse> {
+  const clone = jsonClone(response as TResponse & Record<string, unknown>);
+  if (!response.updated_item) {
+    return clone as ClientSyncCustomActionResponse<TResponse>;
+  }
+
+  return {
+    ...clone,
+    updated_item: sanitizeThreadItem(response.updated_item),
+  } as ClientSyncCustomActionResponse<TResponse>;
+}
+
 export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
   const attachment = AttachmentSchema.safeParse(value);
   if (attachment.success) {
@@ -233,6 +270,15 @@ export function sanitizeClientPayload<T>(value: T): ClientPayload<T> {
   const event = ThreadStreamEventSchema.safeParse(value);
   if (event.success) {
     return sanitizeThreadStreamEvent(mergeParsedThreadStreamEvent(value, event.data)) as ClientPayload<T>;
+  }
+
+  const syncCustomActionResponse =
+    isRecord(value) && "updated_item" in value ? SyncCustomActionResponseSchema.safeParse(value) : null;
+  if (syncCustomActionResponse?.success) {
+    return sanitizeSyncCustomActionResponse({
+      ...jsonClone(value as Record<string, unknown>),
+      ...syncCustomActionResponse.data,
+    } as SyncCustomActionResponse & Record<string, unknown>) as ClientPayload<T>;
   }
 
   return jsonClone(value) as ClientPayload<T>;
