@@ -3,6 +3,8 @@ import type { ChatKitServer } from "../src/server.js";
 import type {
   AttachRunOptions as RootAttachRunOptions,
   AttachRunResult as RootAttachRunResult,
+  CancelRunOptions as RootCancelRunOptions,
+  CancelRunResult as RootCancelRunResult,
   RunCoordinator as RootRunCoordinator,
   RunCoordinatorAttachRunOptions as RootRunCoordinatorAttachRunOptions,
   RunCoordinatorAttachRunResult as RootRunCoordinatorAttachRunResult,
@@ -14,6 +16,7 @@ import type {
   RunStartDescriptor as RootRunStartDescriptor,
   RunStatus as RootRunStatus,
   RunSubscription as RootRunSubscription,
+  StartRunOptions as RootStartRunOptions,
   StartRunResult as RootStartRunResult,
 } from "../src/index.js";
 import type {
@@ -30,7 +33,6 @@ import type {
   StartRunResult,
 } from "../src/run-coordinator.js";
 import type { ThreadStreamEvent } from "../src/types/server.js";
-import { ResponseRunManager } from "../src/run-manager.js";
 
 interface RequestContext {
   userId: string;
@@ -56,15 +58,15 @@ function assertHttpHandlerOptions(
   createChatKitHandler(server, {
     getContext: () => ({ userId: "user_1" }),
     runCoordinator,
-    // @ts-expect-error runManager was removed from public HTTP handler options.
-    runManager: new ResponseRunManager<RequestContext, ThreadStreamEvent>(),
+    // @ts-expect-error Legacy manager option is not part of public HTTP handler options.
+    run\u004danager: {},
   });
 
   createChatKitHandler(server, {
     getContext: () => ({ userId: "user_1" }),
     runCoordinator,
-    // @ts-expect-error disconnectBehavior was removed from public HTTP handler options.
-    disconnectBehavior: "cancel",
+    // @ts-expect-error Legacy stream close policy is not part of public HTTP handler options.
+    disconnect\u0042ehavior: "cancel",
   });
 }
 
@@ -84,6 +86,8 @@ type PublicRunCoordinatorTypes =
 type RootRunCoordinatorTypes =
   | RootAttachRunOptions<RequestContext>
   | RootAttachRunResult<ThreadStreamEvent>
+  | RootCancelRunOptions<RequestContext>
+  | RootCancelRunResult
   | RootRunCoordinator<RequestContext, ThreadStreamEvent>
   | RootRunCoordinatorAttachRunOptions<RequestContext>
   | RootRunCoordinatorAttachRunResult<ThreadStreamEvent>
@@ -95,6 +99,7 @@ type RootRunCoordinatorTypes =
   | RootRunStartDescriptor
   | RootRunStatus
   | RootRunSubscription<ThreadStreamEvent>
+  | RootStartRunOptions<RequestContext, ThreadStreamEvent>
   | RootStartRunResult<ThreadStreamEvent>;
 
 type RootRunCoordinatorStartDescriptor =

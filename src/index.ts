@@ -8,18 +8,20 @@ export type {
   AttachRunOptions as RunCoordinatorAttachRunOptions,
   AttachRunResult,
   AttachRunResult as RunCoordinatorAttachRunResult,
+  CancelRunOptions,
   CancelRunOptions as RunCoordinatorCancelRunOptions,
+  CancelRunResult,
   CancelRunResult as RunCoordinatorCancelRunResult,
   RunCoordinator,
   RunDetachReason,
   RunStartDescriptor,
   RunStatus,
   RunSubscription,
+  StartRunOptions,
   StartRunOptions as RunCoordinatorStartRunOptions,
   StartRunResult,
   StartRunResult as RunCoordinatorStartRunResult,
 } from "./run-coordinator.js";
-export * from "./run-manager.js";
 export * from "./serialization.js";
 export * from "./server.js";
 export * from "./sqlite-store.js";
