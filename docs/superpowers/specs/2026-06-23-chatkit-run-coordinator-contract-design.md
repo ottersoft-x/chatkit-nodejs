@@ -140,13 +140,14 @@ x-chatkit-run-id: run_...
 
 If the ChatKit JS protocol spike discovers a different stable run token, the
 handler may map that token to the coordinator's run id, but it should keep the
-header for application-owned cancel and attach routes.
+header for application-owned cancel routes and custom attach actions.
 
 Normal ChatKit streaming requests start a new run. The package must not infer
 reattach or cancellation from `thread_id`. Reattach is only allowed through:
 
 - a verified ChatKit JS wire request carrying a stable run token, or
-- a package-provided attach helper/route that accepts an explicit `run_id`.
+- a streaming custom action that calls `RunCoordinator.attachRun(...)` with an
+  explicit `run_id`.
 
 ## Contract Shape
 
@@ -344,19 +345,12 @@ the fallback cancel helper or its own explicit route/control.
 
 ## Attach Behavior
 
-The package should provide an optional attach helper/route only for explicit run
-ids:
-
-```ts
-createChatKitRunAttachHandler({
-  getContext,
-  runCoordinator,
-});
-```
-
-The attach helper should accept an explicit `run_id`, call
-`RunCoordinator.attachRun({ runId, context })`, and stream the returned
-subscription when the outcome is `attached`.
+The package should keep attach as a coordinator primitive rather than exposing a
+standalone HTTP helper. Applications that need live resume should handle a
+streaming custom action, validate its explicit `run_id`, call
+`RunCoordinator.attachRun({ runId, context })`, and yield the returned
+subscription events from `ChatKitServer.action(...)` when the outcome is
+`attached`.
 
 Structured not-attachable outcomes should map to clear responses:
 
@@ -421,9 +415,10 @@ Package-level tests should cover:
   `RunCoordinator.cancelRun(...)`.
 - Explicit cancel helper calls `RunCoordinator.cancelRun(...)`.
 - Unknown/already-finished/forbidden cancel outcomes are structured.
-- Attach helper calls `RunCoordinator.attachRun(...)` only with explicit run ids.
-- Not-attachable attach outcomes are structured and mapped to clear stream/API
-  errors.
+- Streaming custom action attach calls `RunCoordinator.attachRun(...)` only with
+  explicit run ids.
+- Not-attachable attach outcomes are structured and mapped to clear stream
+  errors or normal persisted-state recovery.
 - Existing Store and AttachmentStore behavior remains unchanged.
 - Protocol spike fixture or test documents ChatKit JS stop/refresh behavior.
 - Vercel-facing README docs state that process memory is not durable, streamed

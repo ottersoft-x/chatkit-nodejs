@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task. Keep task commits small and run the verification listed in each task.
 
-**Goal:** Replace package-owned in-memory run management with a required app-owned `RunCoordinator` contract, explicit cancel/attach helpers, detach-only SSE disconnect behavior, and Vercel-safe documentation.
+**Goal:** Replace package-owned in-memory run management with a required app-owned `RunCoordinator` contract, an explicit cancel helper, detach-only SSE disconnect behavior, and Vercel-safe documentation.
 
-**Architecture:** `src/http.ts` depends on a narrow public `RunCoordinator` contract. `ChatKitServer.processRequest(...)` remains the canonical request parsing boundary and exposes streaming descriptor metadata to HTTP results. The HTTP handler passes the parsed descriptor, raw request bytes, context, and source stream to `runCoordinator.startRun(...)`. Response cancellation detaches only the SSE subscription. Explicit cancellation and attach are separate helper handlers backed by the same app-owned coordinator.
+**Architecture:** `src/http.ts` depends on a narrow public `RunCoordinator` contract. `ChatKitServer.processRequest(...)` remains the canonical request parsing boundary and exposes streaming descriptor metadata to HTTP results. The HTTP handler passes the parsed descriptor, raw request bytes, context, and source stream to `runCoordinator.startRun(...)`. Response cancellation detaches only the SSE subscription. Explicit cancellation is exposed through a helper handler backed by the same app-owned coordinator. Live attach remains a coordinator primitive that applications call from streaming custom actions when they want reconnect events to flow through ChatKit's UI.
 
 **Hosting model:** The package does not implement Redis, Postgres, pub/sub, queues, Vercel Workflows, or durable continuation. Applications provide that infrastructure behind `RunCoordinator`. On Vercel, SSE is still the browser transport, while app-owned infrastructure must own any backend run that outlives one request invocation.
 
@@ -20,7 +20,7 @@ In scope:
 
 - Public `RunCoordinator` contract types.
 - Required `runCoordinator` in `createChatKitHandler(...)`.
-- Explicit cancel and attach helper handlers.
+- Explicit cancel helper handler.
 - Detach-only response cancellation behavior.
 - Removal of the package-owned in-memory response run manager.
 - Tests and docs proving Vercel-compatible ownership boundaries.
@@ -196,7 +196,7 @@ Use valid streaming bodies for all streaming request tests. Prefer the existing 
 
 ---
 
-## Task 3: Explicit Cancel and Attach Helpers
+## Task 3: Explicit Cancel Helper and Shared Stream Serialization
 
 **Files:**
 
@@ -208,26 +208,15 @@ Use valid streaming bodies for all streaming request tests. Prefer the existing 
 ### Steps
 
 - [ ] Export `createChatKitRunCancelHandler(...)` from `src/http.ts`.
-- [ ] Export `createChatKitRunAttachHandler(...)` from `src/http.ts`.
-- [ ] Both helper handlers must accept `RunCoordinatorHandlerOptions<TContext>`, not the broader handler-only options if those diverge later.
-- [ ] Both helper handlers must parse JSON request bodies shaped as `{ "run_id": "run_..." }`.
+- [ ] The helper handler must accept `RunCoordinatorHandlerOptions<TContext>`, not the broader handler-only options if those diverge later.
+- [ ] The helper handler must parse JSON request bodies shaped as `{ "run_id": "run_..." }`.
 - [ ] Invalid or missing `run_id` returns HTTP 400 with an `invalid_request` error.
 - [ ] Cancel helper calls `runCoordinator.cancelRun({ runId, context })`.
 - [ ] Cancel result mapping:
   - `cancelled`, `cancelling`, `already_finished` -> 200
   - `not_found` -> 404
   - `forbidden` -> 403
-- [ ] Attach helper calls `runCoordinator.attachRun({ runId, context })`.
-- [ ] Attached results stream the returned subscription as SSE and set `x-chatkit-run-id`.
-- [ ] Not-attachable result mapping:
-  - `not_found` -> 404
-  - `forbidden` -> 403
-  - `finished` -> 409
-  - `expired` -> 410
-  - `unavailable` -> 503
-- [ ] Attach SSE serialization must use the same sanitizer-backed serialization helper as normal HTTP streaming.
-- [ ] Do not serialize attach events with raw `JSON.stringify(event)`.
-- [ ] `ChatKitServer.serializeStreamingEventForHandler(...)` should delegate to the shared helper so normal streaming and attach stay aligned.
+- [ ] `ChatKitServer.serializeStreamingEventForHandler(...)` should delegate to the shared sanitizer-backed helper used by normal HTTP streaming.
 
 ### HTTP Test Requirements
 
@@ -238,11 +227,7 @@ Add tests proving:
 - Cancel helper rejects missing `run_id`.
 - Cancel helper can abort an app-owned runtime with `supportsExplicitCancel: true`.
 - The abort path preserves existing Store behavior: partial assistant content is saved and hidden cancellation context is recorded.
-- Attach helper streams events from `attachRun(...)`.
-- Attach helper maps every not-attachable outcome to the expected HTTP response.
-- Attach helper rejects missing `run_id`.
-- Attach helper serialization sanitizes metadata-bearing item/thread events. Use an event that would expose internal metadata or hidden payloads if the sanitizer were bypassed.
-- Subscription cancellation on attach calls `detach("subscriber_cancelled")`.
+- Package smoke coverage proves `createChatKitRunAttachHandler(...)` is not exported; applications should call `RunCoordinator.attachRun(...)` from streaming `ChatKitServer.action(...)` handlers instead.
 
 ### Verification
 
@@ -269,12 +254,12 @@ Add tests proving:
 - [ ] Add a tiny parity coordinator fixture that immediately streams `options.source(defaultRuntime())`.
 - [ ] Keep the parseable SSE parity test intact.
 - [ ] Update parity export assertions:
-  - `createChatKitRunAttachHandler` is a function.
   - `createChatKitRunCancelHandler` is a function.
+  - `createChatKitRunAttachHandler` is not exported.
   - `ResponseRunManager` is no longer expected.
 - [ ] Update `tests/package-smoke/package-smoke.test.ts` to import and assert runtime exports:
-  - `createChatKitRunAttachHandler`
   - `createChatKitRunCancelHandler`
+  - `createChatKitRunAttachHandler` is not exported.
 - [ ] Add package-smoke type-only imports from `"chatkit-nodejs"` to verify published declarations:
   - `RunCoordinator`
   - `RunSubscription`
@@ -313,7 +298,7 @@ Add tests proving:
   - HTTP/SSE disconnect means subscriber detach, not backend cancellation.
   - `x-chatkit-run-id` is the stable header.
   - `createChatKitRunCancelHandler(...)` maps explicit cancellation.
-  - `createChatKitRunAttachHandler(...)` maps live attach when supported.
+  - Live attach should be implemented through streaming `ChatKitServer.action(...)`.
   - Applications own durable execution, authorization, and replay.
 - [ ] Document Vercel hosting compatibility:
   - Use Node.js runtime unless the whole coordinator stack is proven Edge-compatible.

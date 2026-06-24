@@ -55,7 +55,6 @@ import {
   ChatKitServer,
   SQLiteStore,
   createChatKitHandler,
-  createChatKitRunAttachHandler,
   createChatKitRunCancelHandler,
   defaultChatKitStreamRuntime,
   simpleToAgentInput,
@@ -210,7 +209,6 @@ const chatkitOptions = {
 
 const chatkitHandler = createChatKitHandler(appChatKitServer, chatkitOptions);
 const cancelRunHandler = createChatKitRunCancelHandler(chatkitOptions);
-const attachRunHandler = createChatKitRunAttachHandler(chatkitOptions);
 
 async function sendResponse(outgoing: ServerResponse, response: Response): Promise<void> {
   outgoing.writeHead(response.status, Object.fromEntries(response.headers));
@@ -257,11 +255,6 @@ const server = createServer(async (incoming, outgoing) => {
 
   if (request.method === "POST" && url.pathname === "/chatkit/runs/cancel") {
     await sendResponse(outgoing, await cancelRunHandler(request));
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/chatkit/runs/attach") {
-    await sendResponse(outgoing, await attachRunHandler(request));
     return;
   }
 
@@ -312,11 +305,10 @@ export function createAppRunCoordinator<TContext>(
 }
 ```
 
-The server listens on `PORT` or `3000` and exposes `POST /chatkit`, plus
-`POST /chatkit/runs/cancel` and `POST /chatkit/runs/attach` routes when your
-coordinator supports those operations. Protect the cancel and attach routes with
-your app auth. This demo uses `x-user-id` as the per-request user id, falling
-back to `anonymous`.
+The server listens on `PORT` or `3000` and exposes `POST /chatkit`, plus an
+optional `POST /chatkit/runs/cancel` route when your coordinator supports
+explicit cancellation. Protect the cancel route with your app auth. This demo
+uses `x-user-id` as the per-request user id, falling back to `anonymous`.
 
 ### Run lifecycle, cancellation, and Vercel hosting
 
@@ -329,10 +321,9 @@ An HTTP/SSE close is a subscriber detach, not backend cancellation. Browser
 refresh, network changes, mobile sleep, or a fetch abort cause the current
 subscription to detach; they do not call `RunCoordinator.cancelRun(...)`.
 Clients should recover completed state through normal thread/item fetches or
-ChatKit JS `fetchUpdates()`. If your app supports live reconnects,
-`createChatKitRunAttachHandler(...)` maps an explicit `{ "run_id": "run_..." }`
-request to `RunCoordinator.attachRun(...)`; otherwise return a not-attachable
-result and let the client fetch persisted state.
+ChatKit JS `fetchUpdates()`. If your app supports live reconnects, call
+`RunCoordinator.attachRun(...)` from a streaming `ChatKitServer.action(...)`
+override so reconnect events flow through ChatKit's normal stream handling.
 
 The stable response header for the active run is `x-chatkit-run-id`. For
 cross-origin browser apps, expose it with
@@ -341,7 +332,7 @@ it. Explicit cancellation must use an app route or control that calls
 `RunCoordinator.cancelRun(...)`;
 `createChatKitRunCancelHandler(...)` provides the default JSON route shape for
 that mapping. Use the same context derivation and authorization boundary for
-the ChatKit handler, cancel route, and attach route.
+the ChatKit handler, cancel route, and any custom action that attaches to a run.
 
 On Vercel, deploy the consumer app with Node `24.x` because this package
 requires Node.js `>=24.15.0`. Use the Node.js runtime for ChatKit handlers unless

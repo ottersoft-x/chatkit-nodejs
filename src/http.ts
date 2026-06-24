@@ -1,7 +1,6 @@
 import { ChatKitServer, NonStreamingResult, StreamingEventResult } from "./server.js";
 import type { RunCoordinator } from "./run-coordinator.js";
 import { decodeJsonBytes } from "./serialization.js";
-import { serializeThreadStreamEventToSse } from "./stream-serialization.js";
 import type { ThreadStreamEvent } from "./types/server.js";
 
 export interface RunCoordinatorHandlerOptions<TContext> {
@@ -115,46 +114,6 @@ export function createChatKitRunCancelHandler<TContext = undefined>(
   };
 }
 
-export function createChatKitRunAttachHandler<TContext = undefined>(
-  options: RunCoordinatorHandlerOptions<TContext>,
-): ChatKitHandler {
-  return async (request) => {
-    const parsed = await parseRunIdRequest(request);
-    if (!parsed.ok) {
-      return parsed.response;
-    }
-
-    const context = options.getContext
-      ? await options.getContext(request)
-      : (undefined as TContext);
-    const result = await options.runCoordinator.attachRun({
-      runId: parsed.runId,
-      context,
-    });
-
-    if (result.status === "attached") {
-      return new Response(
-        toReadableStream(result.subscription.events, {
-          serializeEvent: serializeThreadStreamEventToSse,
-          onCancel: () => result.subscription.detach("subscriber_cancelled"),
-        }),
-        {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            "x-chatkit-run-id": result.runId,
-          },
-        },
-      );
-    }
-
-    return jsonResponse(
-      notAttachableStatusCode(result.reason),
-      notAttachableResponseBody(result),
-    );
-  };
-}
-
 type ParsedRunIdRequest =
   | { ok: true; runId: string }
   | { ok: false; response: Response };
@@ -211,54 +170,6 @@ function jsonErrorResponse(status: number, code: string, message: string): Respo
       "content-type": "application/json",
     },
   });
-}
-
-function notAttachableStatusCode(
-  reason: "not_found" | "forbidden" | "finished" | "expired" | "unavailable",
-): number {
-  switch (reason) {
-    case "not_found":
-      return 404;
-    case "forbidden":
-      return 403;
-    case "finished":
-      return 409;
-    case "expired":
-      return 410;
-    case "unavailable":
-      return 503;
-  }
-}
-
-function notAttachableMessage(
-  reason: "not_found" | "forbidden" | "finished" | "expired" | "unavailable",
-): string {
-  switch (reason) {
-    case "not_found":
-      return "Run not found.";
-    case "forbidden":
-      return "Run access forbidden.";
-    case "finished":
-      return "Run has already finished.";
-    case "expired":
-      return "Run has expired.";
-    case "unavailable":
-      return "Run is unavailable.";
-  }
-}
-
-function notAttachableResponseBody(result: {
-  status: "not_attachable";
-  reason: "not_found" | "forbidden" | "finished" | "expired" | "unavailable";
-  message?: string;
-  retryAfterMs?: number;
-}): Record<string, unknown> {
-  return {
-    status: result.status,
-    reason: result.reason,
-    message: result.message ?? notAttachableMessage(result.reason),
-    ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
-  };
 }
 
 function notStartedStatusCode(reason: "forbidden" | "conflict" | "unavailable"): number {
