@@ -1,6 +1,15 @@
 import { createChatKitHandler } from "../src/index.js";
 import type { ChatKitServer } from "../src/server.js";
-import type { RunCoordinator as ExportedRunCoordinator } from "../src/index.js";
+import type {
+  AttachRunOptions as RootAttachRunOptions,
+  AttachRunResult as RootAttachRunResult,
+  RunCoordinator as RootRunCoordinator,
+  RunDetachReason as RootRunDetachReason,
+  RunStartDescriptor as RootRunStartDescriptor,
+  RunStatus as RootRunStatus,
+  RunSubscription as RootRunSubscription,
+  StartRunResult as RootStartRunResult,
+} from "../src/index.js";
 import type {
   AttachRunOptions,
   AttachRunResult,
@@ -58,7 +67,6 @@ type PublicRunCoordinatorTypes =
   | AttachRunResult<ThreadStreamEvent>
   | CancelRunOptions<RequestContext>
   | CancelRunResult
-  | ExportedRunCoordinator<RequestContext, ThreadStreamEvent>
   | RunCoordinator<RequestContext, ThreadStreamEvent>
   | RunDetachReason
   | RunStartDescriptor
@@ -67,4 +75,14 @@ type PublicRunCoordinatorTypes =
   | StartRunOptions<RequestContext, ThreadStreamEvent>
   | StartRunResult<ThreadStreamEvent>;
 
-export type { PublicRunCoordinatorTypes };
+type RootRunCoordinatorTypes =
+  | RootAttachRunOptions<RequestContext>
+  | RootAttachRunResult<ThreadStreamEvent>
+  | RootRunCoordinator<RequestContext, ThreadStreamEvent>
+  | RootRunDetachReason
+  | RootRunStartDescriptor
+  | RootRunStatus
+  | RootRunSubscription<ThreadStreamEvent>
+  | RootStartRunResult<ThreadStreamEvent>;
+
+export type { PublicRunCoordinatorTypes, RootRunCoordinatorTypes };
