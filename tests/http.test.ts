@@ -560,6 +560,37 @@ describe("createChatKitHandler", () => {
     ]);
   });
 
+  test("processRequest derives streaming descriptor metadata from parsed request bodies", async () => {
+    const server = new LifecycleServer(async function* (): AsyncIterable<ThreadStreamEvent> {});
+
+    const createResult = await server.processRequest(createThreadRequest("Create descriptor"), undefined);
+
+    expect(createResult).toBeInstanceOf(StreamingEventResult);
+    expect((createResult as StreamingEventResult).descriptorMetadata).toEqual({
+      requestType: "threads.create",
+    });
+
+    const structuredInputResult = await server.processRequest(
+      JSON.stringify({
+        type: "threads.add_structured_input",
+        params: {
+          thread_id: "thread_descriptor",
+          item_id: "item_descriptor",
+          input: { answers: {}, status: "answered" },
+        },
+        metadata: {},
+      }),
+      undefined,
+    );
+
+    expect(structuredInputResult).toBeInstanceOf(StreamingEventResult);
+    expect((structuredInputResult as StreamingEventResult).descriptorMetadata).toEqual({
+      requestType: "threads.add_structured_input",
+      threadId: "thread_descriptor",
+      itemId: "item_descriptor",
+    });
+  });
+
   test("streaming requests pass context, descriptor metadata, and raw request bytes to the coordinator", async () => {
     const body = JSON.stringify({
       type: "threads.add_structured_input",

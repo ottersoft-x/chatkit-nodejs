@@ -5,13 +5,19 @@ export * from "./http.js";
 export * from "./response-sanitizer.js";
 export type {
   AttachRunOptions,
+  AttachRunOptions as RunCoordinatorAttachRunOptions,
   AttachRunResult,
+  AttachRunResult as RunCoordinatorAttachRunResult,
+  CancelRunOptions as RunCoordinatorCancelRunOptions,
+  CancelRunResult as RunCoordinatorCancelRunResult,
   RunCoordinator,
   RunDetachReason,
   RunStartDescriptor,
   RunStatus,
   RunSubscription,
+  StartRunOptions as RunCoordinatorStartRunOptions,
   StartRunResult,
+  StartRunResult as RunCoordinatorStartRunResult,
 } from "./run-coordinator.js";
 export * from "./run-manager.js";
 export * from "./serialization.js";

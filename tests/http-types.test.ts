@@ -4,6 +4,12 @@ import type {
   AttachRunOptions as RootAttachRunOptions,
   AttachRunResult as RootAttachRunResult,
   RunCoordinator as RootRunCoordinator,
+  RunCoordinatorAttachRunOptions as RootRunCoordinatorAttachRunOptions,
+  RunCoordinatorAttachRunResult as RootRunCoordinatorAttachRunResult,
+  RunCoordinatorCancelRunOptions as RootRunCoordinatorCancelRunOptions,
+  RunCoordinatorCancelRunResult as RootRunCoordinatorCancelRunResult,
+  RunCoordinatorStartRunOptions as RootRunCoordinatorStartRunOptions,
+  RunCoordinatorStartRunResult as RootRunCoordinatorStartRunResult,
   RunDetachReason as RootRunDetachReason,
   RunStartDescriptor as RootRunStartDescriptor,
   RunStatus as RootRunStatus,
@@ -79,10 +85,23 @@ type RootRunCoordinatorTypes =
   | RootAttachRunOptions<RequestContext>
   | RootAttachRunResult<ThreadStreamEvent>
   | RootRunCoordinator<RequestContext, ThreadStreamEvent>
+  | RootRunCoordinatorAttachRunOptions<RequestContext>
+  | RootRunCoordinatorAttachRunResult<ThreadStreamEvent>
+  | RootRunCoordinatorCancelRunOptions<RequestContext>
+  | RootRunCoordinatorCancelRunResult
+  | RootRunCoordinatorStartRunOptions<RequestContext, ThreadStreamEvent>
+  | RootRunCoordinatorStartRunResult<ThreadStreamEvent>
   | RootRunDetachReason
   | RootRunStartDescriptor
   | RootRunStatus
   | RootRunSubscription<ThreadStreamEvent>
   | RootStartRunResult<ThreadStreamEvent>;
 
-export type { PublicRunCoordinatorTypes, RootRunCoordinatorTypes };
+type RootRunCoordinatorStartDescriptor =
+  RootRunCoordinatorStartRunOptions<RequestContext, ThreadStreamEvent>["descriptor"];
+
+export type {
+  PublicRunCoordinatorTypes,
+  RootRunCoordinatorStartDescriptor,
+  RootRunCoordinatorTypes,
+};
