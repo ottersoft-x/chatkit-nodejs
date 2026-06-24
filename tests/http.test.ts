@@ -3,13 +3,23 @@ import { describe, test } from "node:test";
 import { expect } from "./helpers/expect.js";
 
 import { createChatKitHandler } from "../src/http.js";
-import { ResponseRunManager } from "../src/run-manager.js";
 import {
   ChatKitServer,
   NonStreamingResult,
   StreamingEventResult,
-  StreamCancelledError,
+  type StreamingDescriptorMetadata,
 } from "../src/server.js";
+import type {
+  AttachRunOptions,
+  AttachRunResult,
+  CancelRunOptions,
+  CancelRunResult,
+  RunCoordinator,
+  RunDetachReason,
+  RunSubscription,
+  StartRunOptions,
+  StartRunResult,
+} from "../src/run-coordinator.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import { BaseStore, type StoreItemType } from "../src/store.js";
 import type { ChatKitStreamRuntime } from "../src/stream-runtime.js";
@@ -139,6 +149,170 @@ class RecordingServer extends ChatKitServer<RequestContext | undefined> {
   }
 }
 
+class AsyncEventQueue<TEvent> {
+  private readonly values: TEvent[] = [];
+  private readonly waiters: Array<{
+    resolve: (result: IteratorResult<TEvent>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  private closed = false;
+  private error: unknown;
+
+  push(event: TEvent): void {
+    if (this.closed || this.error) {
+      return;
+    }
+
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter.resolve({ done: false, value: event });
+      return;
+    }
+
+    this.values.push(event);
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter.resolve({ done: true, value: undefined });
+    }
+  }
+
+  fail(error: unknown): void {
+    if (this.closed || this.error) {
+      return;
+    }
+
+    this.error = error;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter.reject(error);
+    }
+  }
+
+  next(): Promise<IteratorResult<TEvent>> {
+    if (this.values.length > 0) {
+      return Promise.resolve({ done: false, value: this.values.shift()! });
+    }
+
+    if (this.error) {
+      return Promise.reject(this.error);
+    }
+
+    if (this.closed) {
+      return Promise.resolve({ done: true, value: undefined });
+    }
+
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
+    });
+  }
+}
+
+class RecordingRunSubscription implements RunSubscription<ThreadStreamEvent> {
+  readonly detachReasons: RunDetachReason[] = [];
+  private readonly queue = new AsyncEventQueue<ThreadStreamEvent>();
+
+  readonly events: AsyncIterable<ThreadStreamEvent> = {
+    [Symbol.asyncIterator]: () => ({
+      next: () => this.queue.next(),
+      return: async () => {
+        this.queue.close();
+        return { done: true, value: undefined };
+      },
+    }),
+  };
+
+  push(event: ThreadStreamEvent): void {
+    this.queue.push(event);
+  }
+
+  close(): void {
+    this.queue.close();
+  }
+
+  fail(error: unknown): void {
+    this.queue.fail(error);
+  }
+
+  async detach(reason: RunDetachReason): Promise<void> {
+    this.detachReasons.push(reason);
+    this.queue.close();
+  }
+}
+
+class RecordingRunCoordinator<TContext>
+  implements RunCoordinator<TContext, ThreadStreamEvent>
+{
+  readonly startCalls: Array<StartRunOptions<TContext, ThreadStreamEvent>> = [];
+  readonly attachCalls: Array<AttachRunOptions<TContext>> = [];
+  readonly cancelCalls: Array<CancelRunOptions<TContext>> = [];
+  readonly subscriptions: RecordingRunSubscription[] = [];
+  readonly drainPromises: Promise<void>[] = [];
+  private nextRunNumber = 1;
+
+  constructor(
+    private readonly options: {
+      startResult?: StartRunResult<ThreadStreamEvent>;
+      runtime?: () => ChatKitStreamRuntime;
+    } = {},
+  ) {}
+
+  async startRun(
+    options: StartRunOptions<TContext, ThreadStreamEvent>,
+  ): Promise<StartRunResult<ThreadStreamEvent>> {
+    this.startCalls.push(options);
+
+    if (this.options.startResult) {
+      return this.options.startResult;
+    }
+
+    const subscription = new RecordingRunSubscription();
+    this.subscriptions.push(subscription);
+
+    const drainPromise = this.drainSource(options, subscription);
+    this.drainPromises.push(drainPromise);
+    void drainPromise.catch(() => undefined);
+
+    return {
+      status: "started",
+      runId: `run_recorded_${this.nextRunNumber++}`,
+      subscription,
+    };
+  }
+
+  async attachRun(options: AttachRunOptions<TContext>): Promise<AttachRunResult<ThreadStreamEvent>> {
+    this.attachCalls.push(options);
+    return { status: "not_attachable", reason: "not_found" };
+  }
+
+  async cancelRun(options: CancelRunOptions<TContext>): Promise<CancelRunResult> {
+    this.cancelCalls.push(options);
+    return { status: "cancelled" };
+  }
+
+  private async drainSource(
+    options: StartRunOptions<TContext, ThreadStreamEvent>,
+    subscription: RecordingRunSubscription,
+  ): Promise<void> {
+    try {
+      for await (const event of options.source(
+        this.options.runtime ? this.options.runtime() : defaultRuntime(),
+      )) {
+        subscription.push(event);
+      }
+      subscription.close();
+    } catch (error) {
+      subscription.fail(error);
+      throw error;
+    }
+  }
+}
+
 class LifecycleServer extends ChatKitServer<RequestContext | undefined> {
   constructor(
     private readonly responder: (
@@ -173,6 +347,7 @@ function jsonResult(value: unknown): NonStreamingResult {
 function streamingEventResult(
   events: ThreadStreamEvent[],
   tail?: (() => void) | AsyncIterable<ThreadStreamEvent>,
+  descriptorMetadata: StreamingDescriptorMetadata = { requestType: "threads.create" },
 ): StreamingEventResult {
   return new StreamingEventResult(() => ({
     [Symbol.asyncIterator](): AsyncIterator<ThreadStreamEvent> {
@@ -199,7 +374,14 @@ function streamingEventResult(
         },
       };
     },
-  }));
+  }), descriptorMetadata);
+}
+
+function defaultRuntime(): ChatKitStreamRuntime {
+  return {
+    signal: new AbortController().signal,
+    supportsExplicitCancel: false,
+  };
 }
 
 function createThreadRequest(text: string): string {
@@ -289,7 +471,8 @@ async function readThread(
 describe("createChatKitHandler", () => {
   test("returns application/json for non-streaming results", async () => {
     const server = new RecordingServer(jsonResult({ ok: true }));
-    const handler = createChatKitHandler(server);
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitHandler(server, { runCoordinator });
 
     const response = await handler(
       new Request("https://example.com/chatkit", {
@@ -313,23 +496,26 @@ describe("createChatKitHandler", () => {
     const server = new RecordingServer(
       streamingEventResult([{ type: "error", code: "custom", allow_retry: false }]),
     );
-    const handler = createChatKitHandler(server);
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitHandler(server, { runCoordinator });
+    const body = createThreadRequest("Stream response");
 
     const response = await handler(
       new Request("https://example.com/chatkit", {
         method: "POST",
-        body: JSON.stringify({ type: "threads.create", params: {} }),
+        body,
       }),
     );
 
     expect(response.headers.get("content-type")).toBe("text/event-stream");
     expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("x-chatkit-run-id")).toBe("run_recorded_1");
     expect(await response.text()).toBe(
       'data: {"type":"error","code":"custom","allow_retry":false}\n\n',
     );
     expect(server.calls).toEqual([
       {
-        body: JSON.stringify({ type: "threads.create", params: {} }),
+        body,
         context: undefined,
         receivedArrayBuffer: true,
       },
@@ -338,6 +524,7 @@ describe("createChatKitHandler", () => {
 
   test("uses getContext to resolve per-request context", async () => {
     const server = new RecordingServer(jsonResult({ ok: true }));
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
     let getContextCalls = 0;
     const handler = createChatKitHandler(server, {
       getContext: async (request) => {
@@ -349,6 +536,7 @@ describe("createChatKitHandler", () => {
           url: request.url,
         };
       },
+      runCoordinator,
     });
 
     await handler(
@@ -372,7 +560,118 @@ describe("createChatKitHandler", () => {
     ]);
   });
 
-  test("response body cancellation detaches while the run continues", async () => {
+  test("streaming requests pass context, descriptor metadata, and raw request bytes to the coordinator", async () => {
+    const body = JSON.stringify({
+      type: "threads.add_structured_input",
+      params: {
+        thread_id: "thread_123",
+        item_id: "item_456",
+        input: { answers: {}, status: "answered" },
+      },
+      metadata: {},
+    });
+    const context: RequestContext = {
+      userId: "user_123",
+      url: "https://example.com/chatkit",
+    };
+    const server = new RecordingServer(
+      streamingEventResult(
+        [{ type: "notice", level: "info", message: "metadata" }],
+        undefined,
+        {
+          requestType: "threads.add_structured_input",
+          threadId: "thread_123",
+          itemId: "item_456",
+        },
+      ),
+    );
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitHandler(server, {
+      getContext: (request) => ({
+        userId: request.headers.get("x-user-id") ?? "anonymous",
+        url: request.url,
+      }),
+      runCoordinator,
+    });
+
+    const response = await handler(
+      new Request(context.url, {
+        method: "POST",
+        headers: { "x-user-id": context.userId },
+        body,
+      }),
+    );
+
+    await response.text();
+
+    expect(runCoordinator.startCalls).toHaveLength(1);
+    const startCall = runCoordinator.startCalls[0]!;
+    expect(startCall.context).toEqual(context);
+    expect(startCall.descriptor.requestType).toBe("threads.add_structured_input");
+    expect(startCall.descriptor.threadId).toBe("thread_123");
+    expect(startCall.descriptor.itemId).toBe("item_456");
+    expect(Number.isNaN(Date.parse(startCall.descriptor.receivedAt))).toBe(false);
+    expect(startCall.descriptor.rawRequest).toBeInstanceOf(Uint8Array);
+    expect(Array.from(startCall.descriptor.rawRequest)).toEqual(Array.from(encoder.encode(body)));
+  });
+
+  test("streaming request without runCoordinator returns a configuration error", async () => {
+    const server = new RecordingServer(
+      streamingEventResult([{ type: "notice", level: "info", message: "unused" }]),
+    );
+    const handler = createChatKitHandler(server, {} as never);
+    const response = await handler(
+      new Request("https://example.com/chatkit", {
+        method: "POST",
+        body: createThreadRequest("Missing coordinator"),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "configuration_error",
+        message: "createChatKitHandler requires runCoordinator for streaming requests.",
+      },
+    });
+  });
+
+  test("maps coordinator not_started reasons to HTTP status codes", async () => {
+    const cases = [
+      { reason: "forbidden" as const, status: 403 },
+      { reason: "conflict" as const, status: 409 },
+      { reason: "unavailable" as const, status: 503 },
+    ];
+
+    for (const { reason, status } of cases) {
+      const server = new RecordingServer(
+        streamingEventResult([{ type: "notice", level: "info", message: "unused" }]),
+      );
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+        startResult: { status: "not_started", reason, message: `${reason} message` },
+      });
+      const handler = createChatKitHandler(server, { runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit", {
+          method: "POST",
+          body: createThreadRequest(`Start ${reason}`),
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual({
+        error: {
+          code: reason,
+          message: `${reason} message`,
+        },
+      });
+    }
+  });
+
+  test("response body cancellation detaches the subscription without cancelling the run", async () => {
     let releaseTail!: () => void;
     const tailReleased = new Promise<void>((resolve) => {
       releaseTail = resolve;
@@ -391,17 +690,17 @@ describe("createChatKitHandler", () => {
         })(),
       ),
     );
-    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>();
-    const handler = createChatKitHandler(server, { runManager });
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitHandler(server, { runCoordinator });
 
     const response = await handler(
       new Request("https://example.com/chatkit", {
         method: "POST",
-        body: JSON.stringify({ type: "threads.create", params: {} }),
+        body: createThreadRequest("Detach and continue"),
       }),
     );
 
-    expect(response.headers.get("x-chatkit-run-id") ?? "").toMatch(/^run_/);
+    expect(response.headers.get("x-chatkit-run-id")).toBe("run_recorded_1");
 
     const reader = response.body!.getReader();
     const first = await reader.read();
@@ -412,197 +711,14 @@ describe("createChatKitHandler", () => {
     );
 
     await reader.cancel();
+    expect(runCoordinator.subscriptions[0]!.detachReasons).toEqual(["subscriber_cancelled"]);
+    expect(runCoordinator.cancelCalls).toEqual([]);
+
     releaseTail();
     await waitFor(completed, "Expected run source to continue after response body cancellation");
   });
 
-  test("disconnectBehavior cancel aborts the run", async () => {
-    let observeCancellation!: () => void;
-    const cancellationObserved = new Promise<void>((resolve) => {
-      observeCancellation = resolve;
-    });
-    const server = new RecordingServer(
-      new StreamingEventResult((runtime) => ({
-        [Symbol.asyncIterator](): AsyncIterator<ThreadStreamEvent> {
-          let sent = false;
-          runtime.signal.addEventListener("abort", observeCancellation, { once: true });
-
-          return {
-            async next(): Promise<IteratorResult<ThreadStreamEvent>> {
-              if (!sent) {
-                sent = true;
-                return {
-                  done: false,
-                  value: { type: "notice", level: "info", message: "first" },
-                };
-              }
-
-              await new Promise<void>(() => {});
-              return { done: true, value: undefined };
-            },
-            async return(): Promise<IteratorResult<ThreadStreamEvent>> {
-              observeCancellation();
-              return { done: true, value: undefined };
-            },
-          };
-        },
-      })),
-    );
-    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>();
-    const handler = createChatKitHandler(server, {
-      runManager,
-      disconnectBehavior: "cancel",
-    });
-
-    const response = await handler(
-      new Request("https://example.com/chatkit", {
-        method: "POST",
-        body: JSON.stringify({ type: "threads.create", params: {} }),
-      }),
-    );
-    const reader = response.body!.getReader();
-    const first = await reader.read();
-
-    expect(first.done).toBe(false);
-    expect(decoder.decode(first.value)).toBe(
-      'data: {"type":"notice","level":"info","message":"first"}\n\n',
-    );
-
-    await reader.cancel();
-    await waitFor(cancellationObserved, "Expected disconnectBehavior cancel to abort the run");
-  });
-
-  test("disconnectBehavior cancel aborts the run while a read is pending", async () => {
-    let observeCancellation!: () => void;
-    const cancellationObserved = new Promise<void>((resolve) => {
-      observeCancellation = resolve;
-    });
-    const server = new RecordingServer(
-      new StreamingEventResult((runtime) => ({
-        [Symbol.asyncIterator](): AsyncIterator<ThreadStreamEvent> {
-          let sent = false;
-          runtime.signal.addEventListener("abort", observeCancellation, { once: true });
-
-          return {
-            async next(): Promise<IteratorResult<ThreadStreamEvent>> {
-              if (!sent) {
-                sent = true;
-                return {
-                  done: false,
-                  value: { type: "notice", level: "info", message: "first" },
-                };
-              }
-
-              await new Promise<void>(() => {});
-              return { done: true, value: undefined };
-            },
-          };
-        },
-      })),
-    );
-    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>();
-    const handler = createChatKitHandler(server, {
-      runManager,
-      disconnectBehavior: "cancel",
-    });
-
-    const response = await handler(
-      new Request("https://example.com/chatkit", {
-        method: "POST",
-        body: JSON.stringify({ type: "threads.create", params: {} }),
-      }),
-    );
-    const reader = response.body!.getReader();
-
-    expect((await reader.read()).done).toBe(false);
-
-    const pendingRead = reader.read();
-    await waitFor(reader.cancel(), "Expected response cancellation to resolve with a pending read");
-    await waitFor(cancellationObserved, "Expected pending-read cancellation to abort the run");
-    await expect(pendingRead).resolves.toEqual({ done: true, value: undefined });
-  });
-
-  test("explicit run manager cancellation persists partial state and hidden context", async () => {
-    let markPartialReady!: () => void;
-    const partialReady = new Promise<void>((resolve) => {
-      markPartialReady = resolve;
-    });
-    const server = new LifecycleServer(async function* (
-      thread,
-      _inputUserMessage,
-      _context,
-      runtime,
-    ): AsyncIterable<ThreadStreamEvent> {
-      const assistant = assistantMessage(thread, "msg_partial", "");
-      yield { type: "thread.item.added", item: assistant };
-      yield {
-        type: "thread.item.updated",
-        item_id: assistant.id,
-        update: {
-          type: "assistant_message.content_part.text_delta",
-          content_index: 0,
-          delta: "Partial answer",
-        },
-      };
-      markPartialReady();
-
-      await new Promise<never>((_, reject) => {
-        runtime.signal.addEventListener(
-          "abort",
-          () => reject(new StreamCancelledError()),
-          { once: true },
-        );
-      });
-    });
-    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>({
-      getRunScope: (context) => context?.userId ?? "anonymous",
-    });
-    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit" };
-    const handler = createChatKitHandler(server, {
-      getContext: (request) => ({
-        userId: request.headers.get("x-user-id") ?? "anonymous",
-        url: request.url,
-      }),
-      runManager,
-      supportsExplicitCancel: true,
-    });
-
-    const response = await handler(
-      new Request("https://example.com/chatkit", {
-        method: "POST",
-        headers: { "x-user-id": context.userId },
-        body: createThreadRequest("Start"),
-      }),
-    );
-    const runId = response.headers.get("x-chatkit-run-id");
-
-    expect(runId ?? "").toMatch(/^run_/);
-
-    await waitFor(partialReady, "Expected partial assistant state to be produced");
-    expect(await runManager.cancelRun({ runId: runId!, context })).toEqual({ status: "cancelled" });
-    await response.body!.cancel();
-
-    const thread = await readThread(server, context);
-    const assistant = thread.items.data.find((item) => item.id === "msg_partial");
-
-    expect(thread.items.data.some((item) => item.type === "user_message")).toBe(true);
-    expect(assistant).toMatchObject({
-      type: "assistant_message",
-      content: [{ type: "output_text", text: "Partial answer", annotations: [] }],
-    });
-
-    const storedItems = await server.store.loadThreadItems(thread.id, null, 20, "asc", context);
-    const hiddenContextItems = storedItems.data.filter(
-      (item): item is Extract<ThreadItem, { type: "sdk_hidden_context" }> =>
-        item.type === "sdk_hidden_context",
-    );
-    expect(hiddenContextItems).toHaveLength(1);
-    expect(hiddenContextItems[0]!.content).toBe(
-      "The user cancelled the stream. Stop responding to the prior request.",
-    );
-  });
-
-  test("created thread is recoverable when first-turn response is cancelled before reading", async () => {
+  test("app-owned coordinator can drain a first-turn run after subscriber detach and recover Store state", async () => {
     let releaseResponder!: () => void;
     const responderReleased = new Promise<void>((resolve) => {
       releaseResponder = resolve;
@@ -619,11 +735,13 @@ describe("createChatKitHandler", () => {
       markCompleted();
     });
     const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit" };
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
     const handler = createChatKitHandler(server, {
       getContext: (request) => ({
         userId: request.headers.get("x-user-id") ?? "anonymous",
         url: request.url,
       }),
+      runCoordinator,
     });
 
     const response = await handler(
@@ -634,9 +752,12 @@ describe("createChatKitHandler", () => {
       }),
     );
 
-    expect(response.headers.get("x-chatkit-run-id") ?? "").toMatch(/^run_/);
+    expect(response.headers.get("x-chatkit-run-id")).toBe("run_recorded_1");
 
     await response.body!.cancel();
+    expect(runCoordinator.subscriptions[0]!.detachReasons).toEqual(["subscriber_cancelled"]);
+    expect(runCoordinator.cancelCalls).toEqual([]);
+
     releaseResponder();
     await waitFor(completed, "Expected run to complete after response body cancellation");
 
@@ -659,18 +780,21 @@ describe("createChatKitHandler", () => {
 
   test("source failures reject the response body instead of closing cleanly", async () => {
     const server = new RecordingServer(
-      new StreamingEventResult(async function* (): AsyncIterable<ThreadStreamEvent> {
-        yield { type: "notice", level: "info", message: "before failure" };
-        throw new Error("source failed");
-      }),
+      new StreamingEventResult(
+        async function* (): AsyncIterable<ThreadStreamEvent> {
+          yield { type: "notice", level: "info", message: "before failure" };
+          throw new Error("source failed");
+        },
+        { requestType: "threads.create" },
+      ),
     );
-    const runManager = new ResponseRunManager<RequestContext | undefined, ThreadStreamEvent>();
-    const handler = createChatKitHandler(server, { runManager });
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitHandler(server, { runCoordinator });
 
     const response = await handler(
       new Request("https://example.com/chatkit", {
         method: "POST",
-        body: JSON.stringify({ type: "threads.create", params: {} }),
+        body: createThreadRequest("Fail source"),
       }),
     );
 

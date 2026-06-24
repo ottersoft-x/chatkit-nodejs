@@ -4,8 +4,20 @@ import { expect } from "./helpers/expect.js";
 
 import { AgentContext, streamAgentResponse } from "../src/agents/index.js";
 import { createChatKitHandler } from "../src/http.js";
+import type {
+  AttachRunOptions,
+  AttachRunResult,
+  CancelRunOptions,
+  CancelRunResult,
+  RunCoordinator,
+  RunDetachReason,
+  RunSubscription,
+  StartRunOptions,
+  StartRunResult,
+} from "../src/run-coordinator.js";
 import { ChatKitServer, StreamingResult } from "../src/server.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
+import { defaultChatKitStreamRuntime } from "../src/stream-runtime.js";
 import type { ThreadItem, ThreadMetadata } from "../src/types/core.js";
 import { ThreadStreamEventSchema, type ThreadStreamEvent } from "../src/types/server.js";
 
@@ -17,6 +29,34 @@ const now = "2026-05-28T00:00:00.000Z";
 const requestContext: RequestContext = { userId: "user_parity" };
 
 type UserMessageItem = Extract<ThreadItem, { type: "user_message" }>;
+
+class InlineRunSubscription implements RunSubscription<ThreadStreamEvent> {
+  constructor(readonly events: AsyncIterable<ThreadStreamEvent>) {}
+
+  async detach(_reason: RunDetachReason): Promise<void> {}
+}
+
+class InlineRunCoordinator implements RunCoordinator<RequestContext, ThreadStreamEvent> {
+  async startRun(
+    options: StartRunOptions<RequestContext, ThreadStreamEvent>,
+  ): Promise<StartRunResult<ThreadStreamEvent>> {
+    return {
+      status: "started",
+      runId: "run_parity",
+      subscription: new InlineRunSubscription(options.source(defaultChatKitStreamRuntime())),
+    };
+  }
+
+  async attachRun(
+    _options: AttachRunOptions<RequestContext>,
+  ): Promise<AttachRunResult<ThreadStreamEvent>> {
+    return { status: "not_attachable", reason: "not_found" };
+  }
+
+  async cancelRun(_options: CancelRunOptions<RequestContext>): Promise<CancelRunResult> {
+    return { status: "not_found" };
+  }
+}
 
 function makeThread(id = "thr_parity"): ThreadMetadata {
   return {
@@ -198,6 +238,7 @@ describe("ChatKit JS parity smoke", () => {
     const server = new AgentSmokeServer();
     const handler = createChatKitHandler(server, {
       getContext: () => requestContext,
+      runCoordinator: new InlineRunCoordinator(),
     });
 
     const response = await handler(
