@@ -3,6 +3,19 @@ export * from "./agents/index.js";
 export * from "./errors.js";
 export * from "./http.js";
 export * from "./response-sanitizer.js";
+export type {
+  AttachRunOptions,
+  AttachRunResult,
+  CancelRunOptions,
+  CancelRunResult,
+  RunCoordinator,
+  RunDetachReason,
+  RunStartDescriptor,
+  RunStatus,
+  RunSubscription,
+  StartRunOptions,
+  StartRunResult,
+} from "./run-coordinator.js";
 export * from "./run-manager.js";
 export * from "./serialization.js";
 export * from "./server.js";
