@@ -199,7 +199,7 @@ ${researchNotes}`,
 
 const appChatKitServer = new AppChatKitServer();
 const runCoordinator: RunCoordinator<RequestContext, ThreadStreamEvent> =
-  createAppRunCoordinator({
+  createAppRunCoordinator<RequestContext>({
     createRuntime: defaultChatKitStreamRuntime,
   });
 
@@ -275,15 +275,48 @@ server.listen(port, () => {
 });
 ```
 
+The `createAppRunCoordinator` helper imported above is application code, not a
+`chatkit-nodejs` export. A production coordinator should persist run ownership,
+execute or enqueue the stream source, fan out events to subscribers, support
+replay as needed, and enforce your app's authorization model. A minimal skeleton
+is:
+
+```ts
+// ./run-coordinator.ts
+import {
+  type ChatKitStreamRuntime,
+  type RunCoordinator,
+  type ThreadStreamEvent,
+} from "chatkit-nodejs";
+
+interface AppRunCoordinatorOptions {
+  createRuntime(): ChatKitStreamRuntime;
+}
+
+export function createAppRunCoordinator<TContext>(
+  _options: AppRunCoordinatorOptions,
+): RunCoordinator<TContext, ThreadStreamEvent> {
+  return {
+    async startRun(_run) {
+      // Persist run state, execute or enqueue _run.source, and return a
+      // subscription backed by your app's fanout/replay infrastructure.
+      throw new Error("Implement durable application run coordination.");
+    },
+    async attachRun(_run) {
+      return { status: "not_attachable", reason: "unavailable" };
+    },
+    async cancelRun(_run) {
+      return { status: "not_found" };
+    },
+  };
+}
+```
+
 The server listens on `PORT` or `3000` and exposes `POST /chatkit`, plus
-app-authenticated `POST /chatkit/runs/cancel` and
-`POST /chatkit/runs/attach` routes when your coordinator supports those
-operations. It uses `x-user-id` as the per-request user id, falling back to
-`anonymous`.
-`createAppRunCoordinator` is intentionally app-owned code: implement it with
-the durable execution, authorization, fanout, and replay model your deployment
-needs. The package defines the `RunCoordinator` contract, but it does not own or
-persist backend runs for you.
+`POST /chatkit/runs/cancel` and `POST /chatkit/runs/attach` routes when your
+coordinator supports those operations. Protect the cancel and attach routes with
+your app auth. This demo uses `x-user-id` as the per-request user id, falling
+back to `anonymous`.
 
 ### Run lifecycle, cancellation, and Vercel hosting
 
@@ -301,9 +334,11 @@ ChatKit JS `fetchUpdates()`. If your app supports live reconnects,
 request to `RunCoordinator.attachRun(...)`; otherwise return a not-attachable
 result and let the client fetch persisted state.
 
-The stable response header for the active run is `x-chatkit-run-id`. Expose it
-from CORS responses if browser code needs to read it. Explicit cancellation must
-use an app route or control that calls `RunCoordinator.cancelRun(...)`;
+The stable response header for the active run is `x-chatkit-run-id`. For
+cross-origin browser apps, expose it with
+`Access-Control-Expose-Headers: x-chatkit-run-id` if client code needs to read
+it. Explicit cancellation must use an app route or control that calls
+`RunCoordinator.cancelRun(...)`;
 `createChatKitRunCancelHandler(...)` provides the default JSON route shape for
 that mapping. Use the same context derivation and authorization boundary for
 the ChatKit handler, cancel route, and attach route.
