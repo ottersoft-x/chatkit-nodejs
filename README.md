@@ -48,19 +48,22 @@ frontend can show what is happening:
 
 ```ts
 import { Agent, run } from "@openai/agents";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import {
   AgentContext,
   ChatKitServer,
   SQLiteStore,
   createChatKitHandler,
+  defaultChatKitStreamRuntime,
   simpleToAgentInput,
   streamAgentResponse,
+  type RunCoordinator,
   type ThreadItem,
   type ThreadMetadata,
   type ThreadStreamEvent,
 } from "chatkit-nodejs";
+import { createAppRunCoordinator } from "./run-coordinator.js";
 
 interface RequestContext {
   userId: string;
@@ -192,40 +195,59 @@ ${researchNotes}`,
   }
 }
 
-const chatkitHandler = createChatKitHandler(new AppChatKitServer(), {
+const appChatKitServer = new AppChatKitServer();
+const runCoordinator: RunCoordinator<RequestContext, ThreadStreamEvent> =
+  createAppRunCoordinator<RequestContext>({
+    createRuntime: defaultChatKitStreamRuntime,
+  });
+
+const chatkitOptions = {
   getContext: requestContext,
-});
+  runCoordinator,
+};
+
+const chatkitHandler = createChatKitHandler(appChatKitServer, chatkitOptions);
+
+async function sendResponse(outgoing: ServerResponse, response: Response): Promise<void> {
+  outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+
+  if (!response.body) {
+    outgoing.end();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  outgoing.on("close", () => {
+    void reader.cancel();
+  });
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    outgoing.write(value);
+  }
+
+  outgoing.end();
+}
 
 const server = createServer(async (incoming, outgoing) => {
   const origin = `http://${incoming.headers.host ?? "localhost"}`;
-  const request = new Request(new URL(incoming.url ?? "/", origin), {
+  const url = new URL(incoming.url ?? "/", origin);
+  const request = new Request(url, {
     method: incoming.method,
     headers: incoming.headers as HeadersInit,
     body: incoming.method === "GET" || incoming.method === "HEAD" ? undefined : Readable.toWeb(incoming),
     duplex: "half",
   } as RequestInit & { duplex: "half" });
 
-  if (request.method === "GET" && new URL(request.url).pathname === "/health") {
+  if (request.method === "GET" && url.pathname === "/health") {
     outgoing.writeHead(200, { "content-type": "text/plain" });
     outgoing.end("ok");
     return;
   }
 
-  if (request.method === "POST" && new URL(request.url).pathname === "/chatkit") {
-    const response = await chatkitHandler(request);
-    outgoing.writeHead(response.status, Object.fromEntries(response.headers));
-    if (response.body) {
-      const reader = response.body.getReader();
-      outgoing.on("close", () => {
-        void reader.cancel();
-      });
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        outgoing.write(value);
-      }
-    }
-    outgoing.end();
+  if (request.method === "POST" && url.pathname === "/chatkit") {
+    await sendResponse(outgoing, await chatkitHandler(request));
     return;
   }
 
@@ -239,32 +261,74 @@ server.listen(port, () => {
 });
 ```
 
-The server listens on `PORT` or `3000` and exposes `POST /chatkit`. It uses
-`x-user-id` as the per-request user id, falling back to `anonymous`.
+The `createAppRunCoordinator` helper imported above is application code, not a
+`chatkit-nodejs` export. A production coordinator should persist run ownership,
+execute or enqueue the stream source, fan out events to subscribers, support
+replay as needed, and enforce your app's authorization model. A minimal skeleton
+is:
 
-### Stream disconnects and cancellation
+```ts
+// ./run-coordinator.ts
+import {
+  type ChatKitStreamRuntime,
+  type RunCoordinator,
+  type ThreadStreamEvent,
+} from "chatkit-nodejs";
 
-By default, `createChatKitHandler` treats an HTTP/SSE disconnect as a lost
-subscriber, not as user cancellation. This matters for mobile browsers: if the
-device sleeps while a response is streaming, the in-process response run keeps
-draining and persists the final thread items. When the client returns, reload
-the thread or call ChatKit JS `fetchUpdates()` to recover the completed state.
+interface AppRunCoordinatorOptions {
+  createRuntime(): ChatKitStreamRuntime;
+}
 
-Explicit user cancellation must use a separate app route or control that calls
-`ResponseRunManager.cancelRun({ runId, context })`. The handler sends the active
-run id in the `x-chatkit-run-id` response header; expose that header from your
-app if browser code needs to read it across origins. Share one
-`ResponseRunManager` instance between the ChatKit handler and the cancel route,
-and pass the same request context shape to both calls. Use `getRunScope` to
-bind run access to the authenticated user, tenant, or other app-specific
-boundary.
+export function createAppRunCoordinator<TContext>(
+  _options: AppRunCoordinatorOptions,
+): RunCoordinator<TContext, ThreadStreamEvent> {
+  return {
+    async startRun(_run) {
+      // Persist run state, execute or enqueue _run.source, and return a
+      // subscription backed by your app's fanout/replay infrastructure.
+      throw new Error("Implement durable application run coordination.");
+    },
+    async attachRun(_run) {
+      return { status: "not_attachable", reason: "unavailable" };
+    },
+    async cancelRun(_run) {
+      return { status: "not_found" };
+    },
+  };
+}
+```
 
-Set `supportsExplicitCancel: true` only for responders or custom action streams
-that observe `runtime.signal`, or that delegate to helpers such as
-`streamAgentResponse` which do. Otherwise leave it unset so cancellation can
-complete without waiting on a stream that cannot react to abort. Do not treat
-generic fetch abort as user cancellation unless you configure
-`disconnectBehavior: "cancel"`.
+The server listens on `PORT` or `3000` and exposes `POST /chatkit`. This demo
+uses `x-user-id` as the per-request user id, falling back to `anonymous`.
 
-The in-process run manager is not crash durable. Use application infrastructure
-for restart recovery or cross-process workers.
+### Run lifecycle, cancellation, and Vercel hosting
+
+`createChatKitHandler(...)` requires a `runCoordinator` for streaming requests.
+The coordinator owns run start, authorization, durable state, live fanout,
+replay, and cancellation semantics. The handler supplies the parsed stream
+source and returns the coordinator's subscription as SSE.
+
+An HTTP/SSE close is a subscriber detach, not backend cancellation. Browser
+refresh, network changes, mobile sleep, or a fetch abort cause the current
+subscription to detach; they do not call `RunCoordinator.cancelRun(...)`.
+Clients should recover completed state through normal thread/item fetches or
+ChatKit JS `fetchUpdates()`. If your app supports live reconnects, call
+`RunCoordinator.attachRun(...)` from a streaming `ChatKitServer.action(...)`
+override so reconnect events flow through ChatKit's normal stream handling.
+
+The stable response header for the active run is `x-chatkit-run-id`. For
+cross-origin browser apps, expose it with
+`Access-Control-Expose-Headers: x-chatkit-run-id` if client code needs to read
+it. Explicit cancellation must use an app route, action, or control that calls
+`RunCoordinator.cancelRun(...)`. Use the same context derivation and
+authorization boundary for the ChatKit handler and any custom action that
+attaches to or cancels a run.
+
+On Vercel, deploy the consumer app with Node `24.x` because this package
+requires Node.js `>=24.15.0`. Use the Node.js runtime for ChatKit handlers unless
+the entire coordinator stack and its dependencies are proven Edge-compatible.
+Streaming responses count against the function's maximum duration, and
+`waitUntil()` or Next.js `after()` can continue work only within that timeout.
+Durable continuation after response close, timeout, crash, deployment
+replacement, or scale-to-zero requires application infrastructure such as a
+database, pub/sub, queue, Vercel Workflows, or another worker system.

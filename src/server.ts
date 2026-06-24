@@ -12,6 +12,7 @@ import {
   defaultChatKitStreamRuntime,
   type ChatKitStreamRuntime,
 } from "./stream-runtime.js";
+import { serializeThreadStreamEventToSse } from "./stream-serialization.js";
 import type { AttachmentStore, Store } from "./store.js";
 import { ThreadMetadataSchema, type Page, type ThreadItem, type ThreadMetadata } from "./types/core.js";
 import {
@@ -40,9 +41,6 @@ import {
 export { StreamCancelledError } from "./stream-runtime.js";
 export type { ChatKitStreamRuntime } from "./stream-runtime.js";
 
-const sseEncoder = new TextEncoder();
-const sseDecoder = new TextDecoder();
-
 type UserMessageItem = Extract<ThreadItem, { type: "user_message" }>;
 type AssistantMessageItem = Extract<ThreadItem, { type: "assistant_message" }>;
 type ClientToolCallItem = Extract<ThreadItem, { type: "client_tool_call" }>;
@@ -62,11 +60,18 @@ export class NonStreamingResult {
   constructor(readonly json: Uint8Array) {}
 }
 
+export interface StreamingDescriptorMetadata {
+  requestType: string;
+  threadId?: string;
+  itemId?: string;
+}
+
 export class StreamingEventResult {
   private consumed = false;
 
   constructor(
     private readonly createEvents: (runtime: ChatKitStreamRuntime) => AsyncIterable<ThreadStreamEvent>,
+    readonly descriptorMetadata: StreamingDescriptorMetadata = { requestType: "unknown" },
   ) {}
 
   stream(runtime: ChatKitStreamRuntime = defaultChatKitStreamRuntime()): AsyncIterable<ThreadStreamEvent> {
@@ -87,6 +92,23 @@ export class StreamingEventResult {
       yield sanitizeThreadStreamEvent(event);
     }
   }
+}
+
+function streamingDescriptorMetadataForRequest(
+  request: StreamingRequest,
+): StreamingDescriptorMetadata {
+  const metadata: StreamingDescriptorMetadata = { requestType: request.type };
+  const params = request.params as { thread_id?: unknown; item_id?: unknown };
+
+  if (typeof params.thread_id === "string") {
+    metadata.threadId = params.thread_id;
+  }
+
+  if (typeof params.item_id === "string") {
+    metadata.itemId = params.item_id;
+  }
+
+  return metadata;
 }
 
 export interface ChatKitProcessOptions {
@@ -184,7 +206,10 @@ export abstract class ChatKitServer<TContext = unknown> {
     const parsed: ChatKitRequest = ChatKitRequestSchema.parse(decodeJsonBytes(request));
 
     if (isStreamingRequest(parsed)) {
-      return new StreamingEventResult((runtime) => this.processStreamingEvents(parsed, context, runtime));
+      return new StreamingEventResult(
+        (runtime) => this.processStreamingEvents(parsed, context, runtime),
+        streamingDescriptorMetadataForRequest(parsed),
+      );
     }
 
     return new NonStreamingResult(await this.processNonStreaming(parsed, context));
@@ -308,8 +333,7 @@ export abstract class ChatKitServer<TContext = unknown> {
   }
 
   serializeStreamingEventForHandler(event: ThreadStreamEvent): Uint8Array {
-    const json = sseDecoder.decode(this.serialize(event));
-    return sseEncoder.encode(`data: ${json}\n\n`);
+    return serializeThreadStreamEventToSse(event);
   }
 
   protected async *processStreamingEvents(

@@ -256,7 +256,7 @@
         ],
         "tests": []
       },
-      "notes": "Core request processing, persistence, explicit cancellation, retry, actions, transcription, and HTTP streaming are covered. Node.js intentionally improves on Python's transport-coupled cancellation by treating default SSE disconnect as subscriber detach while preserving Python-aligned explicit cancellation behavior.",
+      "notes": "Core request processing, persistence, retry, actions, transcription, and HTTP streaming are covered. Run lifecycle is app-owned through RunCoordinator: HTTP/SSE close detaches the subscriber, explicit cancellation is a separate run-id call, and durable authorization/replay remain application responsibilities.",
       "nodejs": {
         "tests": [
           "tests/server.test.ts",
@@ -264,10 +264,13 @@
         ],
         "sources": [
           "src/server.ts",
-          "src/http.ts"
+          "src/http.ts",
+          "src/run-coordinator.ts"
         ],
         "docs": [
-          "docs/superpowers/specs/2026-05-27-chatkit-server-parity-slice-design.md"
+          "docs/superpowers/specs/2026-05-27-chatkit-server-parity-slice-design.md",
+          "docs/superpowers/specs/2026-06-23-chatkit-run-coordinator-contract-design.md",
+          "docs/protocol/chatkit-js-stop-refresh.md"
         ]
       }
     },
@@ -331,7 +334,7 @@
         ],
         "tests": []
       },
-      "notes": "The HTTP handler returns JSON or text/event-stream responses and preserves streaming chunks for ChatKit clients.",
+      "notes": "The HTTP handler returns JSON or text/event-stream responses, requires an app-owned RunCoordinator for streaming requests, exposes x-chatkit-run-id, and treats response close as subscriber detach. Explicit cancel and attach are app-owned actions that call the same coordinator.",
       "nodejs": {
         "tests": [
           "tests/http.test.ts",
@@ -339,10 +342,13 @@
         ],
         "sources": [
           "src/http.ts",
-          "src/server.ts"
+          "src/server.ts",
+          "src/run-coordinator.ts"
         ],
         "docs": [
-          "docs/superpowers/specs/2026-06-19-chatkit-nodejs-migration-design.md"
+          "docs/superpowers/specs/2026-06-19-chatkit-nodejs-migration-design.md",
+          "docs/superpowers/specs/2026-06-23-chatkit-run-coordinator-contract-design.md",
+          "docs/protocol/chatkit-js-stop-refresh.md"
         ]
       }
     },

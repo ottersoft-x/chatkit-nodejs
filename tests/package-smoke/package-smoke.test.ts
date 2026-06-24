@@ -4,7 +4,18 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { WidgetTemplate, createActionConfig } from "chatkit-nodejs";
+import {
+  WidgetTemplate,
+  createActionConfig,
+} from "chatkit-nodejs";
+import * as chatkit from "chatkit-nodejs";
+import type {
+  RunCoordinator,
+  RunCoordinatorStartRunOptions,
+  RunSubscription,
+  StartRunOptions,
+  ThreadStreamEvent,
+} from "chatkit-nodejs";
 
 import { loadConsumerRelativeTemplate } from "./consumer/consumer.js";
 
@@ -31,6 +42,8 @@ async function writeRelativeWidgetFixtures(): Promise<void> {
 
 test("imports the compiled package through package exports", () => {
   assert.equal(typeof WidgetTemplate, "function");
+  assert.equal("createChatKitRunCancelHandler" in chatkit, false);
+  assert.equal("createChatKitRunAttachHandler" in chatkit, false);
   assert.deepEqual(createActionConfig("open_details"), {
     type: "open_details",
     payload: undefined,
@@ -39,6 +52,16 @@ test("imports the compiled package through package exports", () => {
     streaming: true,
   });
 });
+
+type PackageRunCoordinatorTypes =
+  | RunCoordinator<{ userId: string }, ThreadStreamEvent>
+  | RunSubscription<ThreadStreamEvent>
+  | StartRunOptions<{ userId: string }, ThreadStreamEvent>
+  | RunCoordinatorStartRunOptions<{ userId: string }, ThreadStreamEvent>;
+
+function assertPackageRunCoordinatorTypes(_value: PackageRunCoordinatorTypes): void {}
+
+assertPackageRunCoordinatorTypes;
 
 test("loads caller-relative widget files from a consumer module", async () => {
   await writeRelativeWidgetFixtures();
