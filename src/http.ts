@@ -1,6 +1,5 @@
 import { ChatKitServer, NonStreamingResult, StreamingEventResult } from "./server.js";
 import type { RunCoordinator } from "./run-coordinator.js";
-import { decodeJsonBytes } from "./serialization.js";
 import type { ThreadStreamEvent } from "./types/server.js";
 
 export interface RunCoordinatorHandlerOptions<TContext> {
@@ -82,85 +81,6 @@ export function createChatKitHandler<TContext = undefined>(
     const _exhaustive: never = result;
     return _exhaustive;
   };
-}
-
-export function createChatKitRunCancelHandler<TContext = undefined>(
-  options: RunCoordinatorHandlerOptions<TContext>,
-): ChatKitHandler {
-  return async (request) => {
-    const parsed = await parseRunIdRequest(request);
-    if (!parsed.ok) {
-      return parsed.response;
-    }
-
-    const context = options.getContext
-      ? await options.getContext(request)
-      : (undefined as TContext);
-    const result = await options.runCoordinator.cancelRun({
-      runId: parsed.runId,
-      context,
-    });
-
-    switch (result.status) {
-      case "cancelled":
-      case "cancelling":
-      case "already_finished":
-        return jsonResponse(200, { status: result.status });
-      case "not_found":
-        return jsonErrorResponse(404, "not_found", "Run not found.");
-      case "forbidden":
-        return jsonErrorResponse(403, "forbidden", "Run access forbidden.");
-    }
-  };
-}
-
-type ParsedRunIdRequest =
-  | { ok: true; runId: string }
-  | { ok: false; response: Response };
-
-async function parseRunIdRequest(request: Request): Promise<ParsedRunIdRequest> {
-  let value: unknown;
-
-  try {
-    value = decodeJsonBytes(await request.arrayBuffer());
-  } catch {
-    return invalidRunIdResponse();
-  }
-
-  if (!isRecord(value) || typeof value.run_id !== "string") {
-    return invalidRunIdResponse();
-  }
-
-  const runId = value.run_id.trim();
-  if (runId.length === 0) {
-    return invalidRunIdResponse();
-  }
-
-  return { ok: true, runId };
-}
-
-function invalidRunIdResponse(): ParsedRunIdRequest {
-  return {
-    ok: false,
-    response: jsonErrorResponse(
-      400,
-      "invalid_request",
-      "Expected JSON body with string run_id.",
-    ),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function jsonResponse(status: number, value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: {
-      "content-type": "application/json",
-    },
-  });
 }
 
 function jsonErrorResponse(status: number, code: string, message: string): Response {

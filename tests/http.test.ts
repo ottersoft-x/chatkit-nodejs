@@ -2,10 +2,7 @@ import { describe, test } from "node:test";
 
 import { expect } from "./helpers/expect.js";
 
-import {
-  createChatKitHandler,
-  createChatKitRunCancelHandler,
-} from "../src/http.js";
+import { createChatKitHandler } from "../src/http.js";
 import {
   ChatKitServer,
   NonStreamingResult,
@@ -25,7 +22,7 @@ import type {
 } from "../src/run-coordinator.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import { BaseStore, type StoreItemType } from "../src/store.js";
-import { StreamCancelledError, type ChatKitStreamRuntime } from "../src/stream-runtime.js";
+import type { ChatKitStreamRuntime } from "../src/stream-runtime.js";
 import type { Attachment, Page, ThreadItem, ThreadMetadata } from "../src/types/core.js";
 import type { Thread, ThreadStreamEvent } from "../src/types/server.js";
 
@@ -318,74 +315,6 @@ class RecordingRunCoordinator<TContext>
   }
 }
 
-class ExplicitCancelRunCoordinator<TContext>
-  implements RunCoordinator<TContext, ThreadStreamEvent>
-{
-  readonly startCalls: Array<StartRunOptions<TContext, ThreadStreamEvent>> = [];
-  readonly attachCalls: Array<AttachRunOptions<TContext>> = [];
-  readonly cancelCalls: Array<CancelRunOptions<TContext>> = [];
-  readonly subscriptions: RecordingRunSubscription[] = [];
-  readonly completedRuns: Promise<void>[] = [];
-  private readonly controllers = new Map<string, AbortController>();
-  private nextRunNumber = 1;
-
-  async startRun(
-    options: StartRunOptions<TContext, ThreadStreamEvent>,
-  ): Promise<StartRunResult<ThreadStreamEvent>> {
-    this.startCalls.push(options);
-    const runId = `run_explicit_cancel_${this.nextRunNumber++}`;
-    const controller = new AbortController();
-    const subscription = new RecordingRunSubscription();
-    this.controllers.set(runId, controller);
-    this.subscriptions.push(subscription);
-    const completed = this.drainSource(options, subscription, controller);
-    this.completedRuns.push(completed);
-    void completed.finally(() => {
-      this.controllers.delete(runId);
-    }).catch(() => undefined);
-
-    return { status: "started", runId, subscription };
-  }
-
-  async attachRun(options: AttachRunOptions<TContext>): Promise<AttachRunResult<ThreadStreamEvent>> {
-    this.attachCalls.push(options);
-    return { status: "not_attachable", reason: "not_found" };
-  }
-
-  async cancelRun(options: CancelRunOptions<TContext>): Promise<CancelRunResult> {
-    this.cancelCalls.push(options);
-    const controller = this.controllers.get(options.runId);
-    if (!controller) {
-      return { status: "not_found" };
-    }
-
-    controller.abort();
-    await this.completedRuns.at(-1);
-    return { status: "cancelled" };
-  }
-
-  private async drainSource(
-    options: StartRunOptions<TContext, ThreadStreamEvent>,
-    subscription: RecordingRunSubscription,
-    controller: AbortController,
-  ): Promise<void> {
-    try {
-      for await (const event of options.source({
-        signal: controller.signal,
-        supportsExplicitCancel: true,
-      })) {
-        subscription.push(event);
-      }
-      subscription.close();
-    } catch (error) {
-      subscription.fail(error);
-      if (!(error instanceof StreamCancelledError)) {
-        throw error;
-      }
-    }
-  }
-}
-
 class LifecycleServer extends ChatKitServer<RequestContext | undefined> {
   constructor(
     private readonly responder: (
@@ -484,16 +413,6 @@ function parseSseFrames(text: string): unknown[] {
       expect(frame.startsWith("data: ")).toBe(true);
       return JSON.parse(frame.slice("data: ".length)) as unknown;
     });
-}
-
-function waitForSignalAbort(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve) => {
-    signal.addEventListener("abort", () => resolve(), { once: true });
-  });
 }
 
 async function processJson<T>(
@@ -924,223 +843,5 @@ describe("createChatKitHandler", () => {
     );
 
     await expect(response.text()).rejects.toThrow("source failed");
-  });
-});
-
-describe("createChatKitRunCancelHandler", () => {
-  test("calls cancelRun with the request context", async () => {
-    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit/runs/cancel" };
-    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
-    const handler = createChatKitRunCancelHandler({
-      getContext: (request: Request) => ({
-        userId: request.headers.get("x-user-id") ?? "anonymous",
-        url: request.url,
-      }),
-      runCoordinator,
-    });
-
-    const response = await handler(
-      new Request(context.url, {
-        method: "POST",
-        headers: { "x-user-id": context.userId },
-        body: JSON.stringify({ run_id: "run_123" }),
-      }),
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "cancelled" });
-    expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context }]);
-  });
-
-  test("trims run_id before calling cancelRun", async () => {
-    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
-    const handler = createChatKitRunCancelHandler({ runCoordinator });
-
-    const response = await handler(
-      new Request("https://example.com/chatkit/runs/cancel", {
-        method: "POST",
-        body: JSON.stringify({ run_id: " run_123 " }),
-      }),
-    );
-
-    expect(response.status).toBe(200);
-    expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context: undefined }]);
-  });
-
-  test("maps pending and finished cancel outcomes to structured 200 responses", async () => {
-    const cases = [
-      { status: "cancelling" as const },
-      { status: "already_finished" as const },
-    ];
-
-    for (const result of cases) {
-      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
-        cancelResult: result,
-      });
-      const handler = createChatKitRunCancelHandler({ runCoordinator });
-
-      const response = await handler(
-        new Request("https://example.com/chatkit/runs/cancel", {
-          method: "POST",
-          body: JSON.stringify({ run_id: "run_123" }),
-        }),
-      );
-
-      expect(response.status).toBe(200);
-      expect(response.headers.get("content-type")).toBe("application/json");
-      expect(await response.json()).toEqual(result);
-    }
-  });
-
-  test("maps forbidden and missing runs to structured responses", async () => {
-    const cases = [
-      {
-        result: { status: "forbidden" } satisfies CancelRunResult,
-        status: 403,
-        code: "forbidden",
-        message: "Run access forbidden.",
-      },
-      {
-        result: { status: "not_found" } satisfies CancelRunResult,
-        status: 404,
-        code: "not_found",
-        message: "Run not found.",
-      },
-    ];
-
-    for (const { result, status, code, message } of cases) {
-      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
-        cancelResult: result,
-      });
-      const handler = createChatKitRunCancelHandler({ runCoordinator });
-
-      const response = await handler(
-        new Request("https://example.com/chatkit/runs/cancel", {
-          method: "POST",
-          body: JSON.stringify({ run_id: "run_123" }),
-        }),
-      );
-
-      expect(response.status).toBe(status);
-      expect(response.headers.get("content-type")).toBe("application/json");
-      expect(await response.json()).toEqual({ error: { code, message } });
-    }
-  });
-
-  test("rejects missing or invalid run_id without calling cancelRun", async () => {
-    const invalidBodies = [
-      "{",
-      JSON.stringify({}),
-      JSON.stringify({ run_id: null }),
-      JSON.stringify({ run_id: 123 }),
-      JSON.stringify({ run_id: "" }),
-      JSON.stringify({ run_id: "   " }),
-    ];
-
-    for (const body of invalidBodies) {
-      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
-      const handler = createChatKitRunCancelHandler({ runCoordinator });
-
-      const response = await handler(
-        new Request("https://example.com/chatkit/runs/cancel", {
-          method: "POST",
-          body,
-        }),
-      );
-
-      expect(response.status).toBe(400);
-      expect(response.headers.get("content-type")).toBe("application/json");
-      expect(await response.json()).toEqual({
-        error: {
-          code: "invalid_request",
-          message: "Expected JSON body with string run_id.",
-        },
-      });
-      expect(runCoordinator.cancelCalls).toEqual([]);
-    }
-  });
-
-  test("can abort an app-owned runtime while preserving cancellation Store behavior", async () => {
-    let markPartialProduced!: () => void;
-    const partialProduced = new Promise<void>((resolve) => {
-      markPartialProduced = resolve;
-    });
-    const server = new LifecycleServer(async function* (
-      thread,
-      _inputUserMessage,
-      _context,
-      runtime,
-    ): AsyncIterable<ThreadStreamEvent> {
-      const assistant = { ...assistantMessage(thread, "msg_partial_cancel", ""), thread_id: thread.id };
-      yield { type: "thread.item.added", item: assistant };
-      yield {
-        type: "thread.item.updated",
-        item_id: assistant.id,
-        update: {
-          type: "assistant_message.content_part.text_delta",
-          content_index: 0,
-          delta: "Partial before cancel",
-        },
-      };
-      markPartialProduced();
-      await waitForSignalAbort(runtime.signal);
-      throw new StreamCancelledError();
-    });
-    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit" };
-    const runCoordinator = new ExplicitCancelRunCoordinator<RequestContext | undefined>();
-    const streamingHandler = createChatKitHandler(server, {
-      getContext: (request: Request) => ({
-        userId: request.headers.get("x-user-id") ?? "anonymous",
-        url: request.url,
-      }),
-      runCoordinator,
-    });
-    const cancelHandler = createChatKitRunCancelHandler({
-      getContext: (request: Request) => ({
-        userId: request.headers.get("x-user-id") ?? "anonymous",
-        url: request.url,
-      }),
-      runCoordinator,
-    });
-
-    const streamResponse = await streamingHandler(
-      new Request(context.url, {
-        method: "POST",
-        headers: { "x-user-id": context.userId },
-        body: createThreadRequest("Start cancellable run"),
-      }),
-    );
-    const runId = streamResponse.headers.get("x-chatkit-run-id");
-
-    expect(runId).toBe("run_explicit_cancel_1");
-    await waitFor(partialProduced, "Expected partial assistant state before cancelling");
-
-    const cancelResponse = await cancelHandler(
-      new Request(context.url, {
-        method: "POST",
-        headers: { "x-user-id": context.userId },
-        body: JSON.stringify({ run_id: runId }),
-      }),
-    );
-
-    expect(cancelResponse.status).toBe(200);
-    expect(await cancelResponse.json()).toEqual({ status: "cancelled" });
-    expect(runCoordinator.cancelCalls).toEqual([{ runId, context }]);
-
-    const thread = await readThread(server, context);
-    const storedItems = await server.store.loadThreadItems(thread.id, null, 20, "asc", context);
-
-    expect(storedItems.data.find((item) => item.type === "user_message")).toMatchObject({
-      type: "user_message",
-      content: [{ type: "input_text", text: "Start cancellable run" }],
-    });
-    expect(storedItems.data.find((item) => item.id === "msg_partial_cancel")).toMatchObject({
-      type: "assistant_message",
-      content: [{ type: "output_text", text: "Partial before cancel", annotations: [] }],
-    });
-    expect(storedItems.data.find((item) => item.type === "sdk_hidden_context")).toMatchObject({
-      type: "sdk_hidden_context",
-      content: "The user cancelled the stream. Stop responding to the prior request.",
-    });
   });
 });

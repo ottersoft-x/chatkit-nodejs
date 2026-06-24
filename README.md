@@ -55,7 +55,6 @@ import {
   ChatKitServer,
   SQLiteStore,
   createChatKitHandler,
-  createChatKitRunCancelHandler,
   defaultChatKitStreamRuntime,
   simpleToAgentInput,
   streamAgentResponse,
@@ -208,7 +207,6 @@ const chatkitOptions = {
 };
 
 const chatkitHandler = createChatKitHandler(appChatKitServer, chatkitOptions);
-const cancelRunHandler = createChatKitRunCancelHandler(chatkitOptions);
 
 async function sendResponse(outgoing: ServerResponse, response: Response): Promise<void> {
   outgoing.writeHead(response.status, Object.fromEntries(response.headers));
@@ -250,11 +248,6 @@ const server = createServer(async (incoming, outgoing) => {
 
   if (request.method === "POST" && url.pathname === "/chatkit") {
     await sendResponse(outgoing, await chatkitHandler(request));
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/chatkit/runs/cancel") {
-    await sendResponse(outgoing, await cancelRunHandler(request));
     return;
   }
 
@@ -305,9 +298,7 @@ export function createAppRunCoordinator<TContext>(
 }
 ```
 
-The server listens on `PORT` or `3000` and exposes `POST /chatkit`, plus an
-optional `POST /chatkit/runs/cancel` route when your coordinator supports
-explicit cancellation. Protect the cancel route with your app auth. This demo
+The server listens on `PORT` or `3000` and exposes `POST /chatkit`. This demo
 uses `x-user-id` as the per-request user id, falling back to `anonymous`.
 
 ### Run lifecycle, cancellation, and Vercel hosting
@@ -328,11 +319,10 @@ override so reconnect events flow through ChatKit's normal stream handling.
 The stable response header for the active run is `x-chatkit-run-id`. For
 cross-origin browser apps, expose it with
 `Access-Control-Expose-Headers: x-chatkit-run-id` if client code needs to read
-it. Explicit cancellation must use an app route or control that calls
-`RunCoordinator.cancelRun(...)`;
-`createChatKitRunCancelHandler(...)` provides the default JSON route shape for
-that mapping. Use the same context derivation and authorization boundary for
-the ChatKit handler, cancel route, and any custom action that attaches to a run.
+it. Explicit cancellation must use an app route, action, or control that calls
+`RunCoordinator.cancelRun(...)`. Use the same context derivation and
+authorization boundary for the ChatKit handler and any custom action that
+attaches to or cancels a run.
 
 On Vercel, deploy the consumer app with Node `24.x` because this package
 requires Node.js `>=24.15.0`. Use the Node.js runtime for ChatKit handlers unless

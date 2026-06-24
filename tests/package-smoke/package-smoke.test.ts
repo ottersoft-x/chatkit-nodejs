@@ -7,7 +7,6 @@ import { test } from "node:test";
 import {
   WidgetTemplate,
   createActionConfig,
-  createChatKitRunCancelHandler,
 } from "chatkit-nodejs";
 import * as chatkit from "chatkit-nodejs";
 import type {
@@ -43,7 +42,7 @@ async function writeRelativeWidgetFixtures(): Promise<void> {
 
 test("imports the compiled package through package exports", () => {
   assert.equal(typeof WidgetTemplate, "function");
-  assert.equal(typeof createChatKitRunCancelHandler, "function");
+  assert.equal("createChatKitRunCancelHandler" in chatkit, false);
   assert.equal("createChatKitRunAttachHandler" in chatkit, false);
   assert.deepEqual(createActionConfig("open_details"), {
     type: "open_details",

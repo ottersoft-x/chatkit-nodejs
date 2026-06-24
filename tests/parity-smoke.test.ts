@@ -270,7 +270,7 @@ describe("ChatKit JS parity smoke", () => {
   test("exports run lifecycle helpers", async () => {
     const pkg = await import("../src/index.js");
 
-    expect(typeof pkg.createChatKitRunCancelHandler).toBe("function");
+    expect("createChatKitRunCancelHandler" in pkg).toBe(false);
     expect("createChatKitRunAttachHandler" in pkg).toBe(false);
     expect(("Response" + "RunManager") in pkg).toBe(false);
     expect(typeof pkg.StreamError).toBe("function");

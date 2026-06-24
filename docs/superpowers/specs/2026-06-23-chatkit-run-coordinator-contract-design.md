@@ -140,7 +140,7 @@ x-chatkit-run-id: run_...
 
 If the ChatKit JS protocol spike discovers a different stable run token, the
 handler may map that token to the coordinator's run id, but it should keep the
-header for application-owned cancel routes and custom attach actions.
+header for application-owned cancel and attach actions.
 
 Normal ChatKit streaming requests start a new run. The package must not infer
 reattach or cancellation from `thread_id`. Reattach is only allowed through:
@@ -307,22 +307,12 @@ instead of a single clear contract.
 Explicit cancellation remains a first-class capability, but it must be distinct
 from transport disconnect.
 
-The package should provide a concrete fallback cancellation path even before the
-ChatKit JS stop-button protocol is verified. The target fallback is a small
-handler/helper that applications can mount behind their own auth:
-
-```ts
-createChatKitRunCancelHandler({
-  getContext,
-  runCoordinator,
-});
-```
-
-The fallback handler should accept an explicit run id, preferably JSON shaped as
-`{ "run_id": "run_..." }`, call `RunCoordinator.cancelRun({ runId, context })`,
-and return the structured `CancelRunResult`. Applications may also call
-`runCoordinator.cancelRun(...)` directly from a custom route if they need a
-different wire shape.
+The package should keep cancellation as a coordinator primitive rather than
+exposing a standalone HTTP helper. Applications that need explicit cancellation
+should accept an app-owned control/action with an explicit run id, validate
+authorization in the app context, call
+`RunCoordinator.cancelRun({ runId, context })`, and map the structured
+`CancelRunResult` to their own UI or route response.
 
 Before finalizing whether `createChatKitHandler` itself maps a ChatKit JS stop
 gesture to cancellation, run a protocol spike against ChatKit JS:
@@ -341,7 +331,7 @@ If ChatKit JS sends a distinct and stable cancel action, map it to
 If ChatKit JS only aborts the transport, treat that as detach. Do not advertise
 backend cancellation through `stream_options.allow_cancel` solely because the
 transport can be aborted. The application can still expose cancellation through
-the fallback cancel helper or its own explicit route/control.
+its own explicit route, action, or control.
 
 ## Attach Behavior
 
@@ -413,8 +403,9 @@ Package-level tests should cover:
   infer attach from `thread_id`.
 - Disconnect calls `RunSubscription.detach(...)` and does not call
   `RunCoordinator.cancelRun(...)`.
-- Explicit cancel helper calls `RunCoordinator.cancelRun(...)`.
-- Unknown/already-finished/forbidden cancel outcomes are structured.
+- App-owned explicit cancel actions call `RunCoordinator.cancelRun(...)`.
+- Unknown/already-finished/forbidden cancel outcomes remain structured at the
+  coordinator boundary.
 - Streaming custom action attach calls `RunCoordinator.attachRun(...)` only with
   explicit run ids.
 - Not-attachable attach outcomes are structured and mapped to clear stream
@@ -440,8 +431,8 @@ Local verification should use the package repo's npm scripts and Node.js
 - Streaming responses expose a stable run id header unless a verified ChatKit JS
   protocol provides a better stable token and the header remains available for
   application-owned routes.
-- Explicit cancellation works through a concrete package fallback helper or an
-  app-owned route that calls `runCoordinator.cancelRun(...)`.
+- Explicit cancellation works through an app-owned route, action, or control
+  that calls `runCoordinator.cancelRun(...)`.
 - The package does not export an in-memory fallback implementation.
 - The package does not add package-owned persistence tables, clients, queues, or
   Vercel Workflow code.

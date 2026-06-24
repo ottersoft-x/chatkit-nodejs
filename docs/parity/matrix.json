@@ -334,7 +334,7 @@
         ],
         "tests": []
       },
-      "notes": "The HTTP handler returns JSON or text/event-stream responses, requires an app-owned RunCoordinator for streaming requests, exposes x-chatkit-run-id, and treats response close as subscriber detach. Explicit cancel and attach helpers route run-id requests through the same coordinator.",
+      "notes": "The HTTP handler returns JSON or text/event-stream responses, requires an app-owned RunCoordinator for streaming requests, exposes x-chatkit-run-id, and treats response close as subscriber detach. Explicit cancel and attach are app-owned actions that call the same coordinator.",
       "nodejs": {
         "tests": [
           "tests/http.test.ts",
