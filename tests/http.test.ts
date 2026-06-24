@@ -953,6 +953,21 @@ describe("createChatKitRunCancelHandler", () => {
     expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context }]);
   });
 
+  test("trims run_id before calling cancelRun", async () => {
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitRunCancelHandler({ runCoordinator });
+
+    const response = await handler(
+      new Request("https://example.com/chatkit/runs/cancel", {
+        method: "POST",
+        body: JSON.stringify({ run_id: " run_123 " }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context: undefined }]);
+  });
+
   test("maps forbidden and missing runs to structured responses", async () => {
     const cases = [
       {
@@ -1142,21 +1157,22 @@ describe("createChatKitRunAttachHandler", () => {
     expect(runCoordinator.attachCalls).toEqual([{ runId: "run_123", context }]);
   });
 
-  test("maps every not-attachable outcome to the expected HTTP status", async () => {
+  test("maps every not-attachable outcome to a structured response", async () => {
     const cases = [
       { reason: "not_found" as const, status: 404 },
       { reason: "forbidden" as const, status: 403 },
       { reason: "finished" as const, status: 409 },
       { reason: "expired" as const, status: 410 },
-      { reason: "unavailable" as const, status: 503 },
+      { reason: "unavailable" as const, status: 503, retryAfterMs: 250 },
     ];
 
-    for (const { reason, status } of cases) {
+    for (const { reason, status, retryAfterMs } of cases) {
       const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
         attachResult: {
           status: "not_attachable",
           reason,
           message: `${reason} message`,
+          retryAfterMs,
         },
       });
       const handler = createChatKitRunAttachHandler({ runCoordinator });
@@ -1171,10 +1187,10 @@ describe("createChatKitRunAttachHandler", () => {
       expect(response.status).toBe(status);
       expect(response.headers.get("content-type")).toBe("application/json");
       expect(await response.json()).toEqual({
-        error: {
-          code: reason,
-          message: `${reason} message`,
-        },
+        status: "not_attachable",
+        reason,
+        message: `${reason} message`,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       });
     }
   });

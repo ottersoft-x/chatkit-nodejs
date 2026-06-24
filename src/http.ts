@@ -148,10 +148,9 @@ export function createChatKitRunAttachHandler<TContext = undefined>(
       );
     }
 
-    return jsonErrorResponse(
+    return jsonResponse(
       notAttachableStatusCode(result.reason),
-      result.reason,
-      result.message ?? notAttachableMessage(result.reason),
+      notAttachableResponseBody(result),
     );
   };
 }
@@ -169,11 +168,16 @@ async function parseRunIdRequest(request: Request): Promise<ParsedRunIdRequest> 
     return invalidRunIdResponse();
   }
 
-  if (!isRecord(value) || typeof value.run_id !== "string" || value.run_id.trim().length === 0) {
+  if (!isRecord(value) || typeof value.run_id !== "string") {
     return invalidRunIdResponse();
   }
 
-  return { ok: true, runId: value.run_id };
+  const runId = value.run_id.trim();
+  if (runId.length === 0) {
+    return invalidRunIdResponse();
+  }
+
+  return { ok: true, runId };
 }
 
 function invalidRunIdResponse(): ParsedRunIdRequest {
@@ -241,6 +245,20 @@ function notAttachableMessage(
     case "unavailable":
       return "Run is unavailable.";
   }
+}
+
+function notAttachableResponseBody(result: {
+  status: "not_attachable";
+  reason: "not_found" | "forbidden" | "finished" | "expired" | "unavailable";
+  message?: string;
+  retryAfterMs?: number;
+}): Record<string, unknown> {
+  return {
+    status: result.status,
+    reason: result.reason,
+    message: result.message ?? notAttachableMessage(result.reason),
+    ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+  };
 }
 
 function notStartedStatusCode(reason: "forbidden" | "conflict" | "unavailable"): number {
