@@ -968,6 +968,31 @@ describe("createChatKitRunCancelHandler", () => {
     expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context: undefined }]);
   });
 
+  test("maps pending and finished cancel outcomes to structured 200 responses", async () => {
+    const cases = [
+      { status: "cancelling" as const },
+      { status: "already_finished" as const },
+    ];
+
+    for (const result of cases) {
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+        cancelResult: result,
+      });
+      const handler = createChatKitRunCancelHandler({ runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit/runs/cancel", {
+          method: "POST",
+          body: JSON.stringify({ run_id: "run_123" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual(result);
+    }
+  });
+
   test("maps forbidden and missing runs to structured responses", async () => {
     const cases = [
       {
