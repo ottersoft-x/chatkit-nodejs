@@ -2,7 +2,11 @@ import { describe, test } from "node:test";
 
 import { expect } from "./helpers/expect.js";
 
-import { createChatKitHandler } from "../src/http.js";
+import {
+  createChatKitHandler,
+  createChatKitRunAttachHandler,
+  createChatKitRunCancelHandler,
+} from "../src/http.js";
 import {
   ChatKitServer,
   NonStreamingResult,
@@ -22,7 +26,7 @@ import type {
 } from "../src/run-coordinator.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import { BaseStore, type StoreItemType } from "../src/store.js";
-import type { ChatKitStreamRuntime } from "../src/stream-runtime.js";
+import { StreamCancelledError, type ChatKitStreamRuntime } from "../src/stream-runtime.js";
 import type { Attachment, Page, ThreadItem, ThreadMetadata } from "../src/types/core.js";
 import type { Thread, ThreadStreamEvent } from "../src/types/server.js";
 
@@ -258,6 +262,8 @@ class RecordingRunCoordinator<TContext>
   constructor(
     private readonly options: {
       startResult?: StartRunResult<ThreadStreamEvent>;
+      attachResult?: AttachRunResult<ThreadStreamEvent>;
+      cancelResult?: CancelRunResult;
       runtime?: () => ChatKitStreamRuntime;
     } = {},
   ) {}
@@ -287,12 +293,12 @@ class RecordingRunCoordinator<TContext>
 
   async attachRun(options: AttachRunOptions<TContext>): Promise<AttachRunResult<ThreadStreamEvent>> {
     this.attachCalls.push(options);
-    return { status: "not_attachable", reason: "not_found" };
+    return this.options.attachResult ?? { status: "not_attachable", reason: "not_found" };
   }
 
   async cancelRun(options: CancelRunOptions<TContext>): Promise<CancelRunResult> {
     this.cancelCalls.push(options);
-    return { status: "cancelled" };
+    return this.options.cancelResult ?? { status: "cancelled" };
   }
 
   private async drainSource(
@@ -309,6 +315,74 @@ class RecordingRunCoordinator<TContext>
     } catch (error) {
       subscription.fail(error);
       throw error;
+    }
+  }
+}
+
+class ExplicitCancelRunCoordinator<TContext>
+  implements RunCoordinator<TContext, ThreadStreamEvent>
+{
+  readonly startCalls: Array<StartRunOptions<TContext, ThreadStreamEvent>> = [];
+  readonly attachCalls: Array<AttachRunOptions<TContext>> = [];
+  readonly cancelCalls: Array<CancelRunOptions<TContext>> = [];
+  readonly subscriptions: RecordingRunSubscription[] = [];
+  readonly completedRuns: Promise<void>[] = [];
+  private readonly controllers = new Map<string, AbortController>();
+  private nextRunNumber = 1;
+
+  async startRun(
+    options: StartRunOptions<TContext, ThreadStreamEvent>,
+  ): Promise<StartRunResult<ThreadStreamEvent>> {
+    this.startCalls.push(options);
+    const runId = `run_explicit_cancel_${this.nextRunNumber++}`;
+    const controller = new AbortController();
+    const subscription = new RecordingRunSubscription();
+    this.controllers.set(runId, controller);
+    this.subscriptions.push(subscription);
+    const completed = this.drainSource(options, subscription, controller);
+    this.completedRuns.push(completed);
+    void completed.finally(() => {
+      this.controllers.delete(runId);
+    }).catch(() => undefined);
+
+    return { status: "started", runId, subscription };
+  }
+
+  async attachRun(options: AttachRunOptions<TContext>): Promise<AttachRunResult<ThreadStreamEvent>> {
+    this.attachCalls.push(options);
+    return { status: "not_attachable", reason: "not_found" };
+  }
+
+  async cancelRun(options: CancelRunOptions<TContext>): Promise<CancelRunResult> {
+    this.cancelCalls.push(options);
+    const controller = this.controllers.get(options.runId);
+    if (!controller) {
+      return { status: "not_found" };
+    }
+
+    controller.abort();
+    await this.completedRuns.at(-1);
+    return { status: "cancelled" };
+  }
+
+  private async drainSource(
+    options: StartRunOptions<TContext, ThreadStreamEvent>,
+    subscription: RecordingRunSubscription,
+    controller: AbortController,
+  ): Promise<void> {
+    try {
+      for await (const event of options.source({
+        signal: controller.signal,
+        supportsExplicitCancel: true,
+      })) {
+        subscription.push(event);
+      }
+      subscription.close();
+    } catch (error) {
+      subscription.fail(error);
+      if (!(error instanceof StreamCancelledError)) {
+        throw error;
+      }
     }
   }
 }
@@ -400,6 +474,27 @@ function createThreadRequest(text: string): string {
 
 function decodeJsonResult<T>(result: NonStreamingResult): T {
   return JSON.parse(decoder.decode(result.json)) as T;
+}
+
+function parseSseFrames(text: string): unknown[] {
+  return text
+    .trim()
+    .split("\n\n")
+    .filter((frame) => frame.length > 0)
+    .map((frame) => {
+      expect(frame.startsWith("data: ")).toBe(true);
+      return JSON.parse(frame.slice("data: ".length)) as unknown;
+    });
+}
+
+function waitForSignalAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
 }
 
 async function processJson<T>(
@@ -618,7 +713,7 @@ describe("createChatKitHandler", () => {
     );
     const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
     const handler = createChatKitHandler(server, {
-      getContext: (request) => ({
+      getContext: (request: Request) => ({
         userId: request.headers.get("x-user-id") ?? "anonymous",
         url: request.url,
       }),
@@ -768,7 +863,7 @@ describe("createChatKitHandler", () => {
     const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit" };
     const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
     const handler = createChatKitHandler(server, {
-      getContext: (request) => ({
+      getContext: (request: Request) => ({
         userId: request.headers.get("x-user-id") ?? "anonymous",
         url: request.url,
       }),
@@ -830,5 +925,426 @@ describe("createChatKitHandler", () => {
     );
 
     await expect(response.text()).rejects.toThrow("source failed");
+  });
+});
+
+describe("createChatKitRunCancelHandler", () => {
+  test("calls cancelRun with the request context", async () => {
+    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit/runs/cancel" };
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+    const handler = createChatKitRunCancelHandler({
+      getContext: (request: Request) => ({
+        userId: request.headers.get("x-user-id") ?? "anonymous",
+        url: request.url,
+      }),
+      runCoordinator,
+    });
+
+    const response = await handler(
+      new Request(context.url, {
+        method: "POST",
+        headers: { "x-user-id": context.userId },
+        body: JSON.stringify({ run_id: "run_123" }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "cancelled" });
+    expect(runCoordinator.cancelCalls).toEqual([{ runId: "run_123", context }]);
+  });
+
+  test("maps forbidden and missing runs to structured responses", async () => {
+    const cases = [
+      {
+        result: { status: "forbidden" } satisfies CancelRunResult,
+        status: 403,
+        code: "forbidden",
+        message: "Run access forbidden.",
+      },
+      {
+        result: { status: "not_found" } satisfies CancelRunResult,
+        status: 404,
+        code: "not_found",
+        message: "Run not found.",
+      },
+    ];
+
+    for (const { result, status, code, message } of cases) {
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+        cancelResult: result,
+      });
+      const handler = createChatKitRunCancelHandler({ runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit/runs/cancel", {
+          method: "POST",
+          body: JSON.stringify({ run_id: "run_123" }),
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual({ error: { code, message } });
+    }
+  });
+
+  test("rejects missing or invalid run_id without calling cancelRun", async () => {
+    const invalidBodies = [
+      "{",
+      JSON.stringify({}),
+      JSON.stringify({ run_id: null }),
+      JSON.stringify({ run_id: 123 }),
+      JSON.stringify({ run_id: "" }),
+      JSON.stringify({ run_id: "   " }),
+    ];
+
+    for (const body of invalidBodies) {
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+      const handler = createChatKitRunCancelHandler({ runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit/runs/cancel", {
+          method: "POST",
+          body,
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual({
+        error: {
+          code: "invalid_request",
+          message: "Expected JSON body with string run_id.",
+        },
+      });
+      expect(runCoordinator.cancelCalls).toEqual([]);
+    }
+  });
+
+  test("can abort an app-owned runtime while preserving cancellation Store behavior", async () => {
+    let markPartialProduced!: () => void;
+    const partialProduced = new Promise<void>((resolve) => {
+      markPartialProduced = resolve;
+    });
+    const server = new LifecycleServer(async function* (
+      thread,
+      _inputUserMessage,
+      _context,
+      runtime,
+    ): AsyncIterable<ThreadStreamEvent> {
+      const assistant = { ...assistantMessage(thread, "msg_partial_cancel", ""), thread_id: thread.id };
+      yield { type: "thread.item.added", item: assistant };
+      yield {
+        type: "thread.item.updated",
+        item_id: assistant.id,
+        update: {
+          type: "assistant_message.content_part.text_delta",
+          content_index: 0,
+          delta: "Partial before cancel",
+        },
+      };
+      markPartialProduced();
+      await waitForSignalAbort(runtime.signal);
+      throw new StreamCancelledError();
+    });
+    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit" };
+    const runCoordinator = new ExplicitCancelRunCoordinator<RequestContext | undefined>();
+    const streamingHandler = createChatKitHandler(server, {
+      getContext: (request: Request) => ({
+        userId: request.headers.get("x-user-id") ?? "anonymous",
+        url: request.url,
+      }),
+      runCoordinator,
+    });
+    const cancelHandler = createChatKitRunCancelHandler({
+      getContext: (request: Request) => ({
+        userId: request.headers.get("x-user-id") ?? "anonymous",
+        url: request.url,
+      }),
+      runCoordinator,
+    });
+
+    const streamResponse = await streamingHandler(
+      new Request(context.url, {
+        method: "POST",
+        headers: { "x-user-id": context.userId },
+        body: createThreadRequest("Start cancellable run"),
+      }),
+    );
+    const runId = streamResponse.headers.get("x-chatkit-run-id");
+
+    expect(runId).toBe("run_explicit_cancel_1");
+    await waitFor(partialProduced, "Expected partial assistant state before cancelling");
+
+    const cancelResponse = await cancelHandler(
+      new Request(context.url, {
+        method: "POST",
+        headers: { "x-user-id": context.userId },
+        body: JSON.stringify({ run_id: runId }),
+      }),
+    );
+
+    expect(cancelResponse.status).toBe(200);
+    expect(await cancelResponse.json()).toEqual({ status: "cancelled" });
+    expect(runCoordinator.cancelCalls).toEqual([{ runId, context }]);
+
+    const thread = await readThread(server, context);
+    const storedItems = await server.store.loadThreadItems(thread.id, null, 20, "asc", context);
+
+    expect(storedItems.data.find((item) => item.type === "user_message")).toMatchObject({
+      type: "user_message",
+      content: [{ type: "input_text", text: "Start cancellable run" }],
+    });
+    expect(storedItems.data.find((item) => item.id === "msg_partial_cancel")).toMatchObject({
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Partial before cancel", annotations: [] }],
+    });
+    expect(storedItems.data.find((item) => item.type === "sdk_hidden_context")).toMatchObject({
+      type: "sdk_hidden_context",
+      content: "The user cancelled the stream. Stop responding to the prior request.",
+    });
+  });
+});
+
+describe("createChatKitRunAttachHandler", () => {
+  test("streams attached events and passes request context", async () => {
+    const context: RequestContext = { userId: "user_123", url: "https://example.com/chatkit/runs/attach" };
+    const subscription = new RecordingRunSubscription();
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+      attachResult: { status: "attached", runId: "run_attached_123", subscription },
+    });
+    const handler = createChatKitRunAttachHandler({
+      getContext: (request: Request) => ({
+        userId: request.headers.get("x-user-id") ?? "anonymous",
+        url: request.url,
+      }),
+      runCoordinator,
+    });
+
+    const response = await handler(
+      new Request(context.url, {
+        method: "POST",
+        headers: { "x-user-id": context.userId },
+        body: JSON.stringify({ run_id: "run_123" }),
+      }),
+    );
+
+    subscription.push({ type: "notice", level: "info", message: "attached" });
+    subscription.close();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("x-chatkit-run-id")).toBe("run_attached_123");
+    expect(await response.text()).toBe(
+      'data: {"type":"notice","level":"info","message":"attached"}\n\n',
+    );
+    expect(runCoordinator.attachCalls).toEqual([{ runId: "run_123", context }]);
+  });
+
+  test("maps every not-attachable outcome to the expected HTTP status", async () => {
+    const cases = [
+      { reason: "not_found" as const, status: 404 },
+      { reason: "forbidden" as const, status: 403 },
+      { reason: "finished" as const, status: 409 },
+      { reason: "expired" as const, status: 410 },
+      { reason: "unavailable" as const, status: 503 },
+    ];
+
+    for (const { reason, status } of cases) {
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+        attachResult: {
+          status: "not_attachable",
+          reason,
+          message: `${reason} message`,
+        },
+      });
+      const handler = createChatKitRunAttachHandler({ runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit/runs/attach", {
+          method: "POST",
+          body: JSON.stringify({ run_id: "run_123" }),
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual({
+        error: {
+          code: reason,
+          message: `${reason} message`,
+        },
+      });
+    }
+  });
+
+  test("rejects missing or invalid run_id without calling attachRun", async () => {
+    const invalidBodies = [
+      "{",
+      JSON.stringify({}),
+      JSON.stringify({ run_id: null }),
+      JSON.stringify({ run_id: 123 }),
+      JSON.stringify({ run_id: "" }),
+      JSON.stringify({ run_id: "   " }),
+    ];
+
+    for (const body of invalidBodies) {
+      const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>();
+      const handler = createChatKitRunAttachHandler({ runCoordinator });
+
+      const response = await handler(
+        new Request("https://example.com/chatkit/runs/attach", {
+          method: "POST",
+          body,
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(await response.json()).toEqual({
+        error: {
+          code: "invalid_request",
+          message: "Expected JSON body with string run_id.",
+        },
+      });
+      expect(runCoordinator.attachCalls).toEqual([]);
+    }
+  });
+
+  test("uses sanitizer-backed serialization for metadata-bearing events", async () => {
+    const subscription = new RecordingRunSubscription();
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+      attachResult: { status: "attached", runId: "run_sanitize", subscription },
+    });
+    const handler = createChatKitRunAttachHandler({ runCoordinator });
+
+    const response = await handler(
+      new Request("https://example.com/chatkit/runs/attach", {
+        method: "POST",
+        body: JSON.stringify({ run_id: "run_sanitize" }),
+      }),
+    );
+    const threadCreatedAt = new Date().toISOString();
+    const itemCreatedAt = new Date().toISOString();
+    const metadataBearingUserMessage = {
+      id: "msg_sanitize",
+      thread_id: "thread_sanitize",
+      created_at: itemCreatedAt,
+      type: "user_message" as const,
+      content: [{ type: "input_text" as const, text: "See attachment" }],
+      attachments: [
+        {
+          id: "att_sanitize",
+          type: "file" as const,
+          mime_type: "text/plain",
+          name: "notes.txt",
+          thread_id: "thread_sanitize",
+          metadata: { secret: "remove me" },
+        },
+      ],
+      inference_options: {},
+    };
+
+    subscription.push({
+      type: "thread.created",
+      thread: {
+        id: "thread_sanitize",
+        created_at: threadCreatedAt,
+        status: { type: "active" },
+        items: { data: [metadataBearingUserMessage], has_more: false, after: null },
+      } as unknown as Thread,
+    });
+    subscription.push({
+      type: "thread.item.done",
+      item: metadataBearingUserMessage,
+    });
+    subscription.close();
+
+    const text = await response.text();
+
+    expect(text).not.toContain("metadata");
+    expect(parseSseFrames(text)).toEqual([
+      {
+        type: "thread.created",
+        thread: {
+          id: "thread_sanitize",
+          created_at: threadCreatedAt,
+          status: { type: "active" },
+          items: {
+            data: [
+              {
+                id: "msg_sanitize",
+                thread_id: "thread_sanitize",
+                created_at: itemCreatedAt,
+                type: "user_message",
+                content: [{ type: "input_text", text: "See attachment" }],
+                attachments: [
+                  {
+                    id: "att_sanitize",
+                    type: "file",
+                    mime_type: "text/plain",
+                    name: "notes.txt",
+                    thread_id: "thread_sanitize",
+                  },
+                ],
+                inference_options: {},
+              },
+            ],
+            has_more: false,
+            after: null,
+          },
+        },
+      },
+      {
+        type: "thread.item.done",
+        item: {
+          id: "msg_sanitize",
+          thread_id: "thread_sanitize",
+          created_at: itemCreatedAt,
+          type: "user_message",
+          content: [{ type: "input_text", text: "See attachment" }],
+          attachments: [
+            {
+              id: "att_sanitize",
+              type: "file",
+              mime_type: "text/plain",
+              name: "notes.txt",
+              thread_id: "thread_sanitize",
+            },
+          ],
+          inference_options: {},
+        },
+      },
+    ]);
+  });
+
+  test("detaches the subscription when the attached response body is cancelled", async () => {
+    const subscription = new RecordingRunSubscription();
+    const runCoordinator = new RecordingRunCoordinator<RequestContext | undefined>({
+      attachResult: { status: "attached", runId: "run_detach", subscription },
+    });
+    const handler = createChatKitRunAttachHandler({ runCoordinator });
+
+    const response = await handler(
+      new Request("https://example.com/chatkit/runs/attach", {
+        method: "POST",
+        body: JSON.stringify({ run_id: "run_detach" }),
+      }),
+    );
+
+    subscription.push({ type: "notice", level: "info", message: "first" });
+
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+
+    expect(first.done).toBe(false);
+    expect(decoder.decode(first.value)).toBe(
+      'data: {"type":"notice","level":"info","message":"first"}\n\n',
+    );
+
+    await reader.cancel();
+
+    expect(subscription.detachReasons).toEqual(["subscriber_cancelled"]);
   });
 });

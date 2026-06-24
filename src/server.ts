@@ -12,6 +12,7 @@ import {
   defaultChatKitStreamRuntime,
   type ChatKitStreamRuntime,
 } from "./stream-runtime.js";
+import { serializeThreadStreamEventToSse } from "./stream-serialization.js";
 import type { AttachmentStore, Store } from "./store.js";
 import { ThreadMetadataSchema, type Page, type ThreadItem, type ThreadMetadata } from "./types/core.js";
 import {
@@ -39,9 +40,6 @@ import {
 
 export { StreamCancelledError } from "./stream-runtime.js";
 export type { ChatKitStreamRuntime } from "./stream-runtime.js";
-
-const sseEncoder = new TextEncoder();
-const sseDecoder = new TextDecoder();
 
 type UserMessageItem = Extract<ThreadItem, { type: "user_message" }>;
 type AssistantMessageItem = Extract<ThreadItem, { type: "assistant_message" }>;
@@ -335,8 +333,7 @@ export abstract class ChatKitServer<TContext = unknown> {
   }
 
   serializeStreamingEventForHandler(event: ThreadStreamEvent): Uint8Array {
-    const json = sseDecoder.decode(this.serialize(event));
-    return sseEncoder.encode(`data: ${json}\n\n`);
+    return serializeThreadStreamEventToSse(event);
   }
 
   protected async *processStreamingEvents(
