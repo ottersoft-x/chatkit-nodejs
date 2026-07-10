@@ -290,6 +290,9 @@ function assistantMessageAddedEvents<TContext>(
   const workflowDone = finishWorkflow(context);
 
   if (workflowDone) {
+    // The streaming thought's task lives in the workflow that just closed; later
+    // deltas for its summary index must append fresh instead of mutating it.
+    state.streamingThought = null;
     events.push(workflowDone);
   }
 
@@ -659,18 +662,18 @@ async function convertSdkEvent<TContext>(
         return [];
       }
 
-      if (workflow.workflow.type === "reasoning" && workflow.workflow.tasks.length === 0) {
-        const task = createThoughtTask(delta);
-        const event = appendWorkflowTask(workflow, task);
-        state.streamingThought = { itemId, summaryIndex, task: workflow.workflow.tasks[0] as ThoughtTask };
-
-        return [event];
-      }
-
       const streamingThought = matchingStreamingThought(state, itemId, summaryIndex);
 
       if (!streamingThought) {
-        return [];
+        const task = createThoughtTask(delta, "loading");
+        const event = appendWorkflowTask(workflow, task);
+        state.streamingThought = {
+          itemId,
+          summaryIndex,
+          task: workflow.workflow.tasks[workflow.workflow.tasks.length - 1] as ThoughtTask,
+        };
+
+        return [event];
       }
 
       streamingThought.task.content += delta;
@@ -699,18 +702,19 @@ async function convertSdkEvent<TContext>(
       const streamingThought = matchingStreamingThought(state, itemId, summaryIndex);
 
       if (streamingThought) {
-        streamingThought.task.content = text;
         state.streamingThought = null;
         const taskIndex = workflow.workflow.tasks.indexOf(streamingThought.task);
 
-        if (taskIndex < 0) {
-          return [];
+        // A missing task means its workflow auto-ended mid-stream; fall through so
+        // the finished thought lands in the current workflow instead of vanishing.
+        if (taskIndex >= 0) {
+          streamingThought.task.content = text;
+          streamingThought.task.status_indicator = "complete";
+          return [updateWorkflowTaskEvent(workflow, streamingThought.task, taskIndex)];
         }
-
-        return [updateWorkflowTaskEvent(workflow, streamingThought.task, taskIndex)];
       }
 
-      const task = createThoughtTask(text);
+      const task = createThoughtTask(text, "complete");
       return [appendWorkflowTask(workflow, task)];
     }
 

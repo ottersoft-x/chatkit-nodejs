@@ -87,11 +87,16 @@ export function shouldAutoEndWorkflowForItem<TContext>(
   );
 }
 
-export function createThoughtTask(content: string): ThoughtTask {
+export function createThoughtTask(
+  content: string,
+  statusIndicator: ThoughtTask["status_indicator"],
+): ThoughtTask {
   return {
     type: "thought",
     content,
-    status_indicator: "none",
+    // Never "none": ChatKit renders "none" as an empty circle, which beside
+    // "complete" checkmarks reads as a task that never finished.
+    status_indicator: statusIndicator,
   };
 }
 
@@ -187,6 +192,13 @@ export function finishWorkflow<TContext>(
     ...workflow,
     workflow: {
       ...workflow.workflow,
+      // A finished workflow has nothing in flight: a thought whose summary never
+      // received its done event must not keep spinning in the closed section.
+      tasks: workflow.workflow.tasks.map((task) =>
+        task.type === "thought" && task.status_indicator === "loading"
+          ? { ...task, status_indicator: "complete" as const }
+          : task,
+      ),
       summary:
         summary ??
         workflow.workflow.summary ??
@@ -213,7 +225,21 @@ export async function persistOpenWorkflow<TContext>(
 
   await context.store.saveItem(
     context.thread.id,
-    { ...workflow, created_at: context.createdAt() },
+    {
+      ...workflow,
+      workflow: {
+        ...workflow.workflow,
+        // A persisted thought never resumes streaming (a resumed run is a new
+        // response), so a still-loading one must not spin forever after reload.
+        // App-owned custom tasks are left alone: a client tool call may resume them.
+        tasks: workflow.workflow.tasks.map((task) =>
+          task.type === "thought" && task.status_indicator === "loading"
+            ? { ...task, status_indicator: "complete" as const }
+            : task,
+        ),
+      },
+      created_at: context.createdAt(),
+    },
     context.context,
   );
   context.workflowItem = null;

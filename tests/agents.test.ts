@@ -1092,7 +1092,69 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 1,
-          task: { type: "thought", content: "Analyze", status_indicator: "none" },
+          task: { type: "thought", content: "Analyze", status_indicator: "complete" },
+        },
+      },
+    ]);
+  });
+
+  test("streams reasoning summaries into a resumed custom workflow", async () => {
+    const workflow = storedWorkflowItem();
+    const store = new TestStore([workflow]);
+    const agentContext = createContext(store);
+
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawResponse({
+            type: "response.reasoning_summary_text.delta",
+            item_id: "reasoning_1",
+            summary_index: 0,
+            delta: "Analy",
+          }),
+          rawResponse({
+            type: "response.reasoning_summary_text.delta",
+            item_id: "reasoning_1",
+            summary_index: 0,
+            delta: "ze",
+          }),
+          rawResponse({
+            type: "response.reasoning_summary_text.done",
+            item_id: "reasoning_1",
+            summary_index: 0,
+            text: "Analyze",
+          }),
+        ]),
+      ),
+    );
+
+    expect(events).toEqual([
+      {
+        type: "thread.item.updated",
+        item_id: "wf_previous",
+        update: {
+          type: "workflow.task.added",
+          task_index: 1,
+          task: { type: "thought", content: "Analy", status_indicator: "loading" },
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "wf_previous",
+        update: {
+          type: "workflow.task.updated",
+          task_index: 1,
+          task: { type: "thought", content: "Analyze", status_indicator: "loading" },
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "wf_previous",
+        update: {
+          type: "workflow.task.updated",
+          task_index: 1,
+          task: { type: "thought", content: "Analyze", status_indicator: "complete" },
         },
       },
     ]);
@@ -1123,7 +1185,7 @@ describe("streamAgentResponse", () => {
       update: {
         type: "workflow.task.added",
         task_index: 1,
-        task: { type: "thought", content: "Analyze", status_indicator: "none" },
+        task: { type: "thought", content: "Analyze", status_indicator: "complete" },
       },
     });
   });
@@ -3218,7 +3280,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 0,
-          task: { type: "thought", content: "Think", status_indicator: "none" },
+          task: { type: "thought", content: "Think", status_indicator: "loading" },
         },
       },
       {
@@ -3227,7 +3289,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.updated",
           task_index: 0,
-          task: { type: "thought", content: "Thinking 1", status_indicator: "none" },
+          task: { type: "thought", content: "Thinking 1", status_indicator: "loading" },
         },
       },
       {
@@ -3236,7 +3298,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.updated",
           task_index: 0,
-          task: { type: "thought", content: "Thinking 1", status_indicator: "none" },
+          task: { type: "thought", content: "Thinking 1", status_indicator: "complete" },
         },
       },
       {
@@ -3245,7 +3307,25 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 1,
-          task: { type: "thought", content: "Thinking 2", status_indicator: "none" },
+          task: { type: "thought", content: "Think", status_indicator: "loading" },
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "workflow_generated",
+        update: {
+          type: "workflow.task.updated",
+          task_index: 1,
+          task: { type: "thought", content: "Thinking 2", status_indicator: "loading" },
+        },
+      },
+      {
+        type: "thread.item.updated",
+        item_id: "workflow_generated",
+        update: {
+          type: "workflow.task.updated",
+          task_index: 1,
+          task: { type: "thought", content: "Thinking 2", status_indicator: "complete" },
         },
       },
     ]);
@@ -3261,8 +3341,8 @@ describe("streamAgentResponse", () => {
           workflow: {
             type: "reasoning",
             tasks: [
-              { type: "thought", content: "Thinking 1", status_indicator: "none" },
-              { type: "thought", content: "Thinking 2", status_indicator: "none" },
+              { type: "thought", content: "Thinking 1", status_indicator: "complete" },
+              { type: "thought", content: "Thinking 2", status_indicator: "complete" },
             ],
             expanded: false,
           },
@@ -3315,7 +3395,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 0,
-          task: { type: "thought", content: "Nested thought", status_indicator: "none" },
+          task: { type: "thought", content: "Nested thought", status_indicator: "complete" },
         },
       },
     ]);
@@ -3362,7 +3442,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 0,
-          task: { type: "thought", content: "Thinking 1", status_indicator: "none" },
+          task: { type: "thought", content: "Thinking 1", status_indicator: "complete" },
         },
       },
       {
@@ -3374,7 +3454,7 @@ describe("streamAgentResponse", () => {
           type: "workflow",
           workflow: {
             type: "reasoning",
-            tasks: [{ type: "thought", content: "Thinking 1", status_indicator: "none" }],
+            tasks: [{ type: "thought", content: "Thinking 1", status_indicator: "complete" }],
             summary: { duration: 0 },
             expanded: false,
           },
@@ -3392,6 +3472,105 @@ describe("streamAgentResponse", () => {
       },
     ]);
     expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("persists a still-streaming thought as complete when the stream ends", async () => {
+    const store = new TestStore();
+    const agentContext = createContext(store);
+    await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "reasoning", id: "resp_1", summary: [] },
+          }),
+          rawResponse({
+            type: "response.reasoning_summary_text.delta",
+            item_id: "resp_1",
+            summary_index: 0,
+            delta: "Thinking",
+          }),
+          // Stream ends without a done event; the open workflow is persisted.
+        ]),
+      ),
+    );
+
+    expect(store.savedThreadItems).toEqual([
+      {
+        threadId: "thr_1",
+        context: requestContext,
+        item: {
+          id: "workflow_generated",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "workflow",
+          workflow: {
+            type: "reasoning",
+            tasks: [{ type: "thought", content: "Thinking", status_indicator: "complete" }],
+            expanded: false,
+          },
+        },
+      },
+    ]);
+    expect(agentContext.workflowItem).toBeNull();
+  });
+
+  test("completes a still-streaming thought when the workflow auto-ends", async () => {
+    const agentContext = createContext();
+    const events = await collect(
+      streamAgentResponse(
+        agentContext,
+        streamedRun([
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "reasoning", id: "resp_1", summary: [] },
+          }),
+          rawResponse({
+            type: "response.reasoning_summary_text.delta",
+            item_id: "resp_1",
+            summary_index: 0,
+            delta: "Thinking",
+          }),
+          // No reasoning_summary_text.done: the assistant message ends the workflow
+          // while the thought is still streaming.
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "message", id: "msg_1" },
+          }),
+        ]),
+      ),
+    );
+
+    const taskAdded = events.find(
+      (event) => event.type === "thread.item.updated" && event.update.type === "workflow.task.added",
+    );
+    expect(taskAdded).toEqual({
+      type: "thread.item.updated",
+      item_id: "workflow_generated",
+      update: {
+        type: "workflow.task.added",
+        task_index: 0,
+        task: { type: "thought", content: "Thinking", status_indicator: "loading" },
+      },
+    });
+
+    const workflowDone = events.find((event) => event.type === "thread.item.done");
+    expect(workflowDone).toEqual({
+      type: "thread.item.done",
+      item: {
+        id: "workflow_generated",
+        thread_id: "thr_1",
+        created_at: now,
+        type: "workflow",
+        workflow: {
+          type: "reasoning",
+          tasks: [{ type: "thought", content: "Thinking", status_indicator: "complete" }],
+          summary: { duration: 0 },
+          expanded: false,
+        },
+      },
+    });
   });
 
   test("ends active reasoning workflows before normalized assistant text", async () => {
@@ -3448,7 +3627,7 @@ describe("streamAgentResponse", () => {
         update: {
           type: "workflow.task.added",
           task_index: 0,
-          task: { type: "thought", content: "Thinking 1", status_indicator: "none" },
+          task: { type: "thought", content: "Thinking 1", status_indicator: "complete" },
         },
       },
       {
@@ -3460,7 +3639,7 @@ describe("streamAgentResponse", () => {
           type: "workflow",
           workflow: {
             type: "reasoning",
-            tasks: [{ type: "thought", content: "Thinking 1", status_indicator: "none" }],
+            tasks: [{ type: "thought", content: "Thinking 1", status_indicator: "complete" }],
             summary: { duration: 0 },
             expanded: false,
           },
