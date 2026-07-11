@@ -16,16 +16,11 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false,
-    "types": ["node"]
+    "types": ["node"],
+    "noEmit": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": [
-    "tests/package-smoke/**",
-    "dist",
-    ".tmp",
-    "examples",
-    "packages",
-    "types",
-    "node_modules"
-  ]
+  // The package-smoke tests import the packed build, so they only typecheck after
+  // `npm run build` — tsconfig.package-test.json compiles them.
+  "exclude": ["tests/package-smoke/**"]
 }

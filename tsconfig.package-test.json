@@ -7,5 +7,7 @@
     "sourceMap": true,
     "noEmit": false
   },
-  "include": ["tests/package-smoke/**/*.ts"]
+  "include": ["tests/package-smoke/**/*.ts"],
+  // This project IS the package-smoke tests, so drop the base exclusion.
+  "exclude": []
 }

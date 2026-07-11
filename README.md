@@ -6,6 +6,9 @@ a TypeScript/Node.js port derived from OpenAI's Apache-2.0 licensed
 
 - ChatKit request processing and SSE response helpers.
 - SQLite-backed thread and item storage using Node's built-in `node:sqlite`.
+  Note that `node:sqlite` is synchronous: every store call briefly blocks the
+  event loop, which is fine for modest deployments. For high-concurrency
+  servers, implement the `Store` interface over an async database driver.
 - Widget serialization and streaming helpers.
 - `@openai/agents` stream conversion helpers for Node.js servers.
 

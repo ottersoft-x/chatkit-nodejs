@@ -10,6 +10,7 @@ import { expect } from "./helpers/expect.js";
 
 import { AgentContext, ClientToolCall, streamAgentResponse } from "../src/agents/index.js";
 import { ResponseStreamConverter } from "../src/agents/annotations.js";
+import { NotFoundError } from "../src/errors.js";
 import { SQLiteStore } from "../src/sqlite-store.js";
 import { StreamCancelledError } from "../src/stream-runtime.js";
 import { BaseStore, type Store, type StoreItemType } from "../src/store.js";
@@ -119,11 +120,18 @@ class TestStore extends BaseStore<RequestContext> {
   }
 
   override async loadItem(
-    _threadId: string,
-    _itemId: string,
+    threadId: string,
+    itemId: string,
     _context: RequestContext,
   ): Promise<ThreadItem> {
-    throw new Error("loadItem is not used by agents tests");
+    expect(threadId).toBe(thread.id);
+    const item = this.threadItems.find((item) => item.id === itemId);
+
+    if (!item) {
+      throw new NotFoundError(`Thread item not found: ${itemId}`);
+    }
+
+    return structuredClone(item);
   }
 
   override async deleteThread(_threadId: string, _context: RequestContext): Promise<void> {
@@ -2020,6 +2028,82 @@ describe("streamAgentResponse", () => {
           content: [],
         },
       },
+      { type: "thread.item.removed", item_id: "sdk_message" },
+    ]);
+  });
+
+  test("does not remove pre-existing items older than the resume window on guardrail errors", async () => {
+    const error = guardrailErrorFactories[0]!.create();
+    const olderItem: Extract<ThreadItem, { type: "assistant_message" }> = {
+      id: "old_message",
+      thread_id: thread.id,
+      created_at: now,
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Original", annotations: [] }],
+    };
+    const recentItem = (id: string): ThreadItem => ({
+      id,
+      thread_id: thread.id,
+      created_at: now,
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Recent", annotations: [] }],
+    });
+    const store = new TestStore([recentItem("recent_1"), recentItem("recent_2"), olderItem]);
+    const agentContext = createContext(store);
+    const updatedOlderItem = {
+      ...olderItem,
+      content: [{ type: "output_text" as const, text: "Updated", annotations: [] }],
+    };
+    const freshItem: Extract<ThreadItem, { type: "assistant_message" }> = {
+      id: "fresh_message",
+      thread_id: thread.id,
+      created_at: now,
+      type: "assistant_message",
+      content: [{ type: "output_text", text: "Fresh", annotations: [] }],
+    };
+
+    agentContext.stream({ type: "thread.item.done", item: updatedOlderItem });
+    agentContext.stream({ type: "thread.item.done", item: freshItem });
+
+    const iterator = streamAgentResponse(
+      agentContext,
+      throwingStream(
+        [
+          rawResponse({
+            type: "response.output_item.added",
+            item: { type: "message", id: "sdk_message" },
+          }),
+        ],
+        error,
+      ),
+    );
+    const events: ThreadStreamEvent[] = [];
+    let thrown: unknown;
+
+    try {
+      for await (const event of iterator) {
+        events.push(event);
+      }
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(error);
+
+    expect(events).toEqual([
+      { type: "thread.item.done", item: updatedOlderItem },
+      { type: "thread.item.done", item: freshItem },
+      {
+        type: "thread.item.added",
+        item: {
+          id: "sdk_message",
+          thread_id: "thr_1",
+          created_at: now,
+          type: "assistant_message",
+          content: [],
+        },
+      },
+      { type: "thread.item.removed", item_id: "fresh_message" },
       { type: "thread.item.removed", item_id: "sdk_message" },
     ]);
   });

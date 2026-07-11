@@ -4,6 +4,7 @@ import {
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
 } from "@openai/agents";
+import { NotFoundError } from "../errors.js";
 import {
   nextWithAbort,
   StreamCancelledError,
@@ -397,31 +398,63 @@ function isGuardrailTripwire(error: unknown): boolean {
   );
 }
 
-function trackProducedItemId(
+// Intentional difference from upstream chatkit-python (agents.py tracks every queue
+// "thread.item.done" as produced): a done event can also update a pre-existing item
+// from an earlier run, and rolling one back on a guardrail tripwire deletes it from
+// the store. An item is only treated as produced by this run if it was added here or
+// the store has no record of it. The store probe is sound because it runs before the
+// event is yielded, so an item created by this run cannot be persisted yet.
+async function trackProducedItemId<TContext>(
+  context: AgentContext<TContext>,
   producedItemIds: Set<string>,
-  existingItemIds: ReadonlySet<string>,
+  existingItemIds: Set<string>,
   event: ThreadStreamEvent,
-): void {
+): Promise<void> {
   if (event.type === "thread.item.added") {
     producedItemIds.add(event.item.id);
     return;
   }
 
   if (
-    event.type === "thread.item.done" &&
-    (!existingItemIds.has(event.item.id) || producedItemIds.has(event.item.id))
+    event.type !== "thread.item.done" ||
+    producedItemIds.has(event.item.id) ||
+    existingItemIds.has(event.item.id)
   ) {
-    producedItemIds.add(event.item.id);
+    return;
+  }
+
+  if (await itemExistsInStore(context, event.item.id)) {
+    existingItemIds.add(event.item.id);
+    return;
+  }
+
+  producedItemIds.add(event.item.id);
+}
+
+async function itemExistsInStore<TContext>(
+  context: AgentContext<TContext>,
+  itemId: string,
+): Promise<boolean> {
+  try {
+    await context.store.loadItem(context.thread.id, itemId, context.context);
+    return true;
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return false;
+    }
+
+    throw error;
   }
 }
 
-function parseAndTrackProducedItem(
+async function parseAndTrackProducedItem<TContext>(
+  context: AgentContext<TContext>,
   producedItemIds: Set<string>,
-  existingItemIds: ReadonlySet<string>,
+  existingItemIds: Set<string>,
   event: ThreadStreamEvent,
-): ThreadStreamEvent {
+): Promise<ThreadStreamEvent> {
   const parsedEvent = ThreadStreamEventSchema.parse(event);
-  trackProducedItemId(producedItemIds, existingItemIds, parsedEvent);
+  await trackProducedItemId(context, producedItemIds, existingItemIds, parsedEvent);
   return parsedEvent;
 }
 
@@ -991,7 +1024,7 @@ export async function* streamAgentResponse<TContext>(
           contextNext = tagNext("context", contextIterator.next());
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
             throwIfAborted(signal);
-            yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
+            yield await parseAndTrackProducedItem(context, producedItemIds, existingItemIds, event);
           }
         }
         continue;
@@ -1026,7 +1059,12 @@ export async function* streamAgentResponse<TContext>(
             contextNext = tagNext("context", contextIterator.next());
             for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
               throwIfAborted(signal);
-              yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
+              yield await parseAndTrackProducedItem(
+                context,
+                producedItemIds,
+                existingItemIds,
+                event,
+              );
             }
             continue;
           }
@@ -1042,7 +1080,7 @@ export async function* streamAgentResponse<TContext>(
 
           for (const event of contextEventsWithWorkflowLifecycle(context, value)) {
             throwIfAborted(signal);
-            yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
+            yield await parseAndTrackProducedItem(context, producedItemIds, existingItemIds, event);
           }
         }
         continue;
@@ -1063,7 +1101,7 @@ export async function* streamAgentResponse<TContext>(
 
       for (const event of await convertSdkEvent(context, state, next.result.value, converter)) {
         throwIfAborted(signal);
-        yield parseAndTrackProducedItem(producedItemIds, existingItemIds, event);
+        yield await parseAndTrackProducedItem(context, producedItemIds, existingItemIds, event);
       }
     }
 
@@ -1074,7 +1112,12 @@ export async function* streamAgentResponse<TContext>(
 
     if (clientToolCallEvent) {
       throwIfAborted(signal);
-      yield parseAndTrackProducedItem(producedItemIds, existingItemIds, clientToolCallEvent);
+      yield await parseAndTrackProducedItem(
+        context,
+        producedItemIds,
+        existingItemIds,
+        clientToolCallEvent,
+      );
     }
   } catch (error) {
     caughtError = error;

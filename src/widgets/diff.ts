@@ -119,15 +119,21 @@ function validateStreamingTextUpdates(
 }
 
 export function diffWidget(before: WidgetRoot, after: WidgetRoot): WidgetDiffUpdate[] {
-  const beforeRoot = serializeWidget(before);
-  const afterRoot = serializeWidget(after);
-  const beforeNodes = streamingTextById(beforeRoot);
-  const afterNodes = streamingTextById(afterRoot);
+  return diffSerializedWidgets(serializeWidget(before), serializeWidget(after));
+}
 
+// Both roots must be serializeWidget output. streamWidget carries each frame's
+// serialized root into the next diff so every state is serialized exactly once.
+export function diffSerializedWidgets(
+  beforeRoot: Record<string, unknown>,
+  afterRoot: Record<string, unknown>,
+): WidgetDiffUpdate[] {
   if (requiresFullReplace(beforeRoot, afterRoot, true)) {
     return [{ type: "widget.root.updated", widget: afterRoot }];
   }
 
+  const beforeNodes = streamingTextById(beforeRoot);
+  const afterNodes = streamingTextById(afterRoot);
   validateStreamingTextUpdates(beforeNodes, afterNodes);
 
   const updates: WidgetDiffUpdate[] = [];

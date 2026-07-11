@@ -2,7 +2,7 @@ import type { StoreItemType } from "../store.js";
 import { defaultGenerateId } from "../store.js";
 import type { ThreadItem, ThreadMetadata } from "../types/core.js";
 import type { ThreadStreamEvent } from "../types/server.js";
-import { diffWidget } from "./diff.js";
+import { diffSerializedWidgets } from "./diff.js";
 import { serializeWidget } from "./serialization.js";
 import type { WidgetRoot } from "./types.js";
 
@@ -26,7 +26,7 @@ function makeWidgetItem(
   thread: ThreadMetadata,
   itemId: string,
   createdAt: string,
-  widget: WidgetRoot,
+  widget: Record<string, unknown>,
   options: ResolvedStreamWidgetOptions,
 ): ThreadItem {
   return {
@@ -34,7 +34,7 @@ function makeWidgetItem(
     type: "widget",
     thread_id: thread.id,
     created_at: createdAt,
-    widget: serializeWidget(widget),
+    widget,
     copy_text: options.copyText ?? undefined,
   };
 }
@@ -55,7 +55,13 @@ export async function* streamWidget(
   if (!isAsyncIterable(widgetOrAsyncIterable)) {
     yield {
       type: "thread.item.done",
-      item: makeWidgetItem(thread, itemId, createdAt, widgetOrAsyncIterable, resolvedOptions),
+      item: makeWidgetItem(
+        thread,
+        itemId,
+        createdAt,
+        serializeWidget(widgetOrAsyncIterable),
+        resolvedOptions,
+      ),
     };
     return;
   }
@@ -69,10 +75,10 @@ export async function* streamWidget(
       throw new Error("streamWidget async iterable must yield an initial widget.");
     }
 
-    let lastState = first.value;
+    let lastRoot = serializeWidget(first.value);
     yield {
       type: "thread.item.added",
-      item: makeWidgetItem(thread, itemId, createdAt, lastState, resolvedOptions),
+      item: makeWidgetItem(thread, itemId, createdAt, lastRoot, resolvedOptions),
     };
 
     for (;;) {
@@ -82,19 +88,20 @@ export async function* streamWidget(
         break;
       }
 
-      for (const update of diffWidget(lastState, next.value)) {
+      const nextRoot = serializeWidget(next.value);
+      for (const update of diffSerializedWidgets(lastRoot, nextRoot)) {
         yield {
           type: "thread.item.updated",
           item_id: itemId,
           update,
         };
       }
-      lastState = next.value;
+      lastRoot = nextRoot;
     }
 
     yield {
       type: "thread.item.done",
-      item: makeWidgetItem(thread, itemId, createdAt, lastState, resolvedOptions),
+      item: makeWidgetItem(thread, itemId, createdAt, lastRoot, resolvedOptions),
     };
   } finally {
     if (!completed) {

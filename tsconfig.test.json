@@ -6,7 +6,5 @@
     "declaration": false,
     "sourceMap": true,
     "noEmit": false
-  },
-  "include": ["src/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["tests/package-smoke/**", "dist", ".tmp", "node_modules"]
+  }
 }

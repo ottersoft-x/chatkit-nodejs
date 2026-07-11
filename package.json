@@ -1,6 +1,6 @@
 {
   "name": "chatkit-nodejs",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Node.js server helpers for ChatKit-style thread APIs.",
   "license": "Apache-2.0",
   "type": "module",
@@ -46,7 +46,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@openai/agents": "^0.11.8",
+    "@openai/agents": "^0.13.2",
     "nunjucks": "^3.2.4",
     "zod": "^4.4.3"
   },
@@ -55,9 +55,8 @@
     "build": "tsc -p tsconfig.build.json",
     "build:test": "tsc -p tsconfig.test.json",
     "build:scripts": "tsc -p tsconfig.scripts.json",
-    "build:package-test": "tsc -p tsconfig.package-test.json",
     "test": "npm run build:test && node -e \"import('node:fs/promises').then(fs => fs.cp('tests/assets', '.tmp/test/tests/assets', { recursive: true, force: true }))\" && node --test .tmp/test/tests/*.test.js",
-    "test:package": "npm run build && npm run build:package-test && node --test .tmp/package-test/tests/package-smoke/*.test.js",
+    "test:package": "npm run build && tsc -p tsconfig.package-test.json && node --test .tmp/package-test/tests/package-smoke/*.test.js",
     "typecheck": "tsc --noEmit",
     "pack:check": "npm run build && npm run build:scripts && node .tmp/scripts/scripts/check-package.js",
     "verify": "npm run typecheck && npm test && npm run test:package && npm run pack:check",
