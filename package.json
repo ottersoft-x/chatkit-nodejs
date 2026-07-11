@@ -41,7 +41,7 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^24.13.2",
+    "@types/node": "^24.13.3",
     "@types/nunjucks": "^3.2.6",
     "typescript": "^6.0.3"
   },
