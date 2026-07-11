@@ -37,13 +37,13 @@ function makeMessage(id = "msg_test", createdAt = "2026-05-26T00:00:01.000Z"): A
 
 describe("store helpers", () => {
   const idCases = [
-    ["thread", /^thr_[0-9a-f]{8}$/],
-    ["message", /^msg_[0-9a-f]{8}$/],
-    ["tool_call", /^tc_[0-9a-f]{8}$/],
-    ["task", /^tsk_[0-9a-f]{8}$/],
-    ["workflow", /^wf_[0-9a-f]{8}$/],
-    ["attachment", /^atc_[0-9a-f]{8}$/],
-    ["sdk_hidden_context", /^shcx_[0-9a-f]{8}$/],
+    ["thread", /^thr_[0-9a-f]{24}$/],
+    ["message", /^msg_[0-9a-f]{24}$/],
+    ["tool_call", /^tc_[0-9a-f]{24}$/],
+    ["task", /^tsk_[0-9a-f]{24}$/],
+    ["workflow", /^wf_[0-9a-f]{24}$/],
+    ["attachment", /^atc_[0-9a-f]{24}$/],
+    ["sdk_hidden_context", /^shcx_[0-9a-f]{24}$/],
   ] as const;
 
   for (const [itemType, pattern] of idCases) {

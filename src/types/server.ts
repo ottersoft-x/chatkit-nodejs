@@ -214,17 +214,12 @@ export const ChatKitRequestSchema = z.discriminatedUnion("type", [
 ]);
 export type ChatKitRequest = z.infer<typeof ChatKitRequestSchema>;
 
-const STREAMING_REQUEST_TYPES = [
-  "threads.create",
-  "threads.add_user_message",
-  "threads.add_client_tool_output",
-  "threads.add_structured_input",
-  "threads.retry_after_item",
-  "threads.custom_action",
-] as const;
+const STREAMING_REQUEST_TYPES = new Set<string>(
+  StreamingRequestSchema.options.map((option) => option.shape.type.value),
+);
 
 export function isStreamingRequest(request: ChatKitRequest): request is StreamingRequest {
-  return (STREAMING_REQUEST_TYPES as readonly string[]).includes(request.type);
+  return STREAMING_REQUEST_TYPES.has(request.type);
 }
 
 export const ThreadSchema = ThreadMetadataSchema.extend({

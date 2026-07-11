@@ -34,10 +34,9 @@ export async function nextWithAbort<T>(
   next: Promise<IteratorResult<T>>,
   signal: AbortSignal,
 ): Promise<IteratorResult<T>> {
-  const observedNext = next.catch((error: unknown) => {
-    throw error;
-  });
-  void observedNext.catch(() => {});
+  // Observe rejections so an abort that wins the race below cannot leave the
+  // losing next() promise as an unhandled rejection.
+  void next.catch(() => {});
   throwIfAborted(signal);
 
   let cleanup = (): void => {};
@@ -48,7 +47,7 @@ export async function nextWithAbort<T>(
   });
 
   try {
-    return await Promise.race([observedNext, abort]);
+    return await Promise.race([next, abort]);
   } finally {
     cleanup();
   }

@@ -336,6 +336,8 @@ export abstract class ChatKitServer<TContext = unknown> {
     return serializeThreadStreamEventToSse(event);
   }
 
+  // Events yielded here (and by processEvents) are not client-sanitized;
+  // StreamingEventResult.stream() applies sanitization at the consumer boundary.
   protected async *processStreamingEvents(
     request: StreamingRequest,
     context: TContext,
@@ -708,11 +710,11 @@ export abstract class ChatKitServer<TContext = unknown> {
         }
 
         if (!suppressClientEvent) {
-          yield sanitizeThreadStreamEvent(event);
+          yield event;
         }
 
         if (await saveThreadIfChanged()) {
-          yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
+          yield { type: "thread.updated", thread: this.toThreadResponse(thread) };
         }
       }
       if (runtime.signal.aborted) {
@@ -754,7 +756,7 @@ export abstract class ChatKitServer<TContext = unknown> {
     }
 
     if (await saveThreadIfChanged()) {
-      yield sanitizeThreadStreamEvent({ type: "thread.updated", thread: this.toThreadResponse(thread) });
+      yield { type: "thread.updated", thread: this.toThreadResponse(thread) };
     }
 
     if (terminalEvent) {

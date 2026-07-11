@@ -20,7 +20,11 @@ const idPrefixes: Record<StoreItemType, string> = {
 };
 
 export function defaultGenerateId(itemType: StoreItemType): string {
-  return `${idPrefixes[itemType]}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  // Intentional difference from upstream chatkit-python (uuid4().hex[:8]): 32-bit
+  // ids collide at realistic per-user volumes, and SQLiteStore.saveThread upserts
+  // on id conflict, so a thread-id collision silently overwrites another thread.
+  // 24 hex chars (~90 random bits) makes collisions implausible.
+  return `${idPrefixes[itemType]}_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
 }
 
 export interface AttachmentCreateParams {

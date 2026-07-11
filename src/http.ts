@@ -15,18 +15,16 @@ export function createChatKitHandler<TContext = undefined>(
   server: ChatKitServer<TContext>,
   options: ChatKitHandlerOptions<TContext>,
 ): ChatKitHandler {
-  const handlerOptions = options as Partial<ChatKitHandlerOptions<TContext>> | undefined;
-
   return async (request) => {
     const receivedAt = new Date().toISOString();
-    const context = handlerOptions?.getContext
-      ? await handlerOptions.getContext(request)
+    const context = options.getContext
+      ? await options.getContext(request)
       : (undefined as TContext);
     const rawRequestBuffer = await request.arrayBuffer();
-    const rawRequestBytes = new Uint8Array(rawRequestBuffer);
     const result = await server.processRequest(rawRequestBuffer, context);
 
     if (result instanceof NonStreamingResult) {
+      // Copy: result.json is Uint8Array<ArrayBufferLike>, which BodyInit rejects.
       return new Response(new Uint8Array(result.json), {
         headers: {
           "content-type": "application/json",
@@ -35,7 +33,9 @@ export function createChatKitHandler<TContext = undefined>(
     }
 
     if (result instanceof StreamingEventResult) {
-      const runCoordinator = handlerOptions?.runCoordinator;
+      // JS callers can omit runCoordinator despite the required type; fail with a
+      // clear configuration error instead of a TypeError mid-stream.
+      const runCoordinator = options.runCoordinator;
 
       if (!runCoordinator) {
         return jsonErrorResponse(
@@ -50,7 +50,7 @@ export function createChatKitHandler<TContext = undefined>(
         descriptor: {
           ...result.descriptorMetadata,
           receivedAt,
-          rawRequest: new Uint8Array(rawRequestBytes),
+          rawRequest: new Uint8Array(rawRequestBuffer),
         },
         source: (runtime) => result.stream(runtime),
       });
